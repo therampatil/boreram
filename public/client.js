@@ -468,55 +468,51 @@ function updatePlayerCount(count) {
   }
 }
 
-// Distance selector change
-if (distanceSelector) {
-  distanceSelector.addEventListener("change", (e) => {
-    const selectedDistance = parseInt(e.target.value, 10);
-    if (isNaN(selectedDistance)) return;
-
-    // Update race distance on server
-    socket.emit("update-distance", selectedDistance);
-
-    addLog(`> race distance set to ${selectedDistance} meters`);
-  });
-}
-
-// New room button (visible only to creator)
+// New room button (available to everyone)
 if (newRoomBtn) {
   newRoomBtn.addEventListener("click", () => {
-    if (!isCreator) return;
+    // Go back to join screen with a fresh state
+    gameScreen.classList.add("hidden");
+    joinScreen.classList.remove("hidden");
 
-    // Leave current room
-    socket.emit("leave-room");
-
-    // Optionally, redirect to a new room URL or generate a new room code
+    // Generate a new room code
     const newRoomCode = Math.random()
       .toString(36)
       .substring(2, 8)
       .toUpperCase();
     document.getElementById("room-code").value = newRoomCode;
 
-    addLog(`> new room created: ${newRoomCode}`);
+    // Clear URL params
+    window.history.replaceState({}, "", window.location.pathname);
+
+    // Reset state
+    isCreator = false;
+    raceState = "waiting";
+    canStart = false;
+
+    // Clear status log
+    statusLog.innerHTML = "<p>> Ready to join a new room...</p>";
+
+    // Hide all buttons
+    startRaceBtn.classList.add("hidden");
+    restartBtn.classList.add("hidden");
+    if (pauseBtn) pauseBtn.classList.add("hidden");
+    if (distanceSelector) distanceSelector.classList.add("hidden");
+
+    // Clear error message
+    errorMsg.textContent = "";
+
+    addLog(`> new room code: ${newRoomCode}`);
   });
 }
 
-// Pause button (client-side only, for now)
+// Pause button (host only)
 if (pauseBtn) {
   pauseBtn.addEventListener("click", () => {
-    if (raceState !== "racing") return;
+    if (!isCreator) return;
+    if (raceState !== "racing" && raceState !== "paused") return;
 
-    // Toggle pause state
-    const isPaused = Game.togglePause();
-
-    if (isPaused) {
-      addLog("> race paused. click [Resume] to continue.");
-      pauseBtn.textContent = "Resume";
-    } else {
-      addLog("> race resumed.");
-      pauseBtn.textContent = "Pause";
-    }
-
-    // Optionally, emit pause/resume event to server
-    socket.emit("toggle-pause", isPaused);
+    // Send toggle-pause to server - server handles the state
+    socket.emit("toggle-pause");
   });
 }
