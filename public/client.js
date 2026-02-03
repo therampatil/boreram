@@ -5,6 +5,22 @@
 
 const socket = io();
 
+// Connection status
+socket.on("connect", () => {
+  console.log("Connected to server");
+  if (errorMsg) errorMsg.textContent = "";
+});
+
+socket.on("disconnect", () => {
+  console.log("Disconnected from server");
+  if (errorMsg) errorMsg.textContent = "> error: disconnected from server";
+});
+
+socket.on("connect_error", (err) => {
+  console.error("Connection error:", err);
+  if (errorMsg) errorMsg.textContent = "> error: cannot connect to server";
+});
+
 // DOM Elements
 const joinScreen = document.getElementById("join-screen");
 const gameScreen = document.getElementById("game-screen");

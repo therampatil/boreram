@@ -487,3 +487,23 @@ body {
   font-size: 12px;
   margin-top: 30px;
 }
+
+/* Developer credit */
+.developer-credit {
+  margin-top: 20px;
+  padding-top: 15px;
+  border-top: 1px solid #1a1a1a;
+  text-align: center;
+  color: #555;
+  font-size: 12px;
+}
+
+.developer-credit.game-credit {
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.developer-credit .highlight {
+  color: #33ff33;
+  font-weight: bold;
+}
