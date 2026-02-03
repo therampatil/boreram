@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Terminal</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- Join Screen -->
+    <div id="join-screen" class="screen">
+      <div class="terminal-window">
+        <div class="terminal-header">
+          <span class="prompt">$</span> connect --room
+        </div>
+        <form id="join-form">
+          <div class="input-group">
+            <label for="room-code">> Room Code:</label>
+            <input
+              type="text"
+              id="room-code"
+              name="roomCode"
+              placeholder="MATH101"
+              required
+              autocomplete="off"
+            />
+          </div>
+          <div class="input-group">
+            <label for="name">> Name:</label>
+            <input
+              type="text"
+              id="name"
+              name="name"
+              placeholder="anonymous"
+              required
+              autocomplete="off"
+            />
+          </div>
+          <button type="submit" class="btn">[Enter]</button>
+        </form>
+        <div id="error-msg" class="error"></div>
+      </div>
+    </div>
+
+    <!-- Game Screen (hidden by default) -->
+    <div id="game-screen" class="screen hidden">
+      <div class="terminal-window game-layout">
+        <div class="terminal-header">
+          <span class="prompt">$</span> room: <span id="display-room"></span> |
+          user: <span id="display-name"></span>
+          <button id="share-btn" class="share-btn">[Share Link]</button>
+        </div>
+        <div class="game-layout-container">
+          <!-- Left Panel: Details -->
+          <div class="left-panel">
+            <div id="status-log">
+              <p>> Connected to room...</p>
+            </div>
+            <div id="members-list">
+              <p class="section-title">> online:</p>
+              <ul id="members"></ul>
+            </div>
+            <div class="controls-info">
+              <p class="section-title">> controls:</p>
+              <ul class="controls-list">
+                <li>← / A : move left</li>
+                <li>→ / D : move right</li>
+                <li>↑ / W : boost speed</li>
+                <li>H : stealth mode</li>
+              </ul>
+            </div>
+            <div id="game-stats">
+              <p class="section-title">> stats:</p>
+              <div class="stat-row">
+                <span>speed:</span> <span id="stat-speed">0</span>
+              </div>
+              <div class="stat-row">
+                <span>distance:</span> <span id="stat-distance">0m</span>
+              </div>
+              <div class="stat-row">
+                <span>players:</span> <span id="stat-players">1</span>
+              </div>
+            </div>
+          </div>
+          <!-- Right Panel: Game Canvas -->
+          <div class="right-panel">
+            <div id="game-container">
+              <canvas id="game-canvas"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stealth Mode Overlay (Wikipedia-style fake page) -->
+    <div id="stealth-overlay" class="hidden">
+      <div class="wiki-header">
+        <div class="wiki-logo">W</div>
+        <div class="wiki-title">Wikipedia</div>
+        <div class="wiki-subtitle">The Free Encyclopedia</div>
+      </div>
+      <div class="wiki-content">
+        <h1>Linear algebra</h1>
+        <p class="wiki-intro">
+          <strong>Linear algebra</strong> is the branch of mathematics
+          concerning linear equations such as:
+        </p>
+        <p class="wiki-formula">a₁x₁ + a₂x₂ + ⋯ + aₙxₙ = b</p>
+        <p>linear maps such as:</p>
+        <p class="wiki-formula">(x₁, …, xₙ) ↦ a₁x₁ + ⋯ + aₙxₙ</p>
+        <p>and their representations in vector spaces and through matrices.</p>
+        <h2>Contents</h2>
+        <ol class="wiki-toc">
+          <li>History</li>
+          <li>Vector spaces</li>
+          <li>Linear maps</li>
+          <li>Matrices</li>
+          <li>Eigenvalues and eigenvectors</li>
+        </ol>
+        <h2>History</h2>
+        <p>
+          The study of linear algebra first emerged from the introduction of
+          determinants, for solving systems of linear equations. The study of
+          matrix algebra first emerged in England in the mid-1800s. In 1844
+          Hermann Grassmann published his "Theory of Extension" which included
+          foundational new topics of what is today called linear algebra.
+        </p>
+        <p class="wiki-note">[Press H to return to game]</p>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="game.js"></script>
+    <script src="client.js"></script>
+  </body>
+</html>
