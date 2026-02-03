@@ -1,3 +1,8 @@
+/**
+ * Neon Racer - Multiplayer Browser Racing Game
+ * @created by therampatil
+ */
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -15,15 +20,16 @@ const rooms = {};
 
 // Race states
 const RACE_STATE = {
-  WAITING: 'waiting',      // Waiting for players to join
-  COUNTDOWN: 'countdown',  // 3-2-1-GO countdown
-  RACING: 'racing',        // Race in progress
-  FINISHED: 'finished'     // Race completed
+  WAITING: "waiting", // Waiting for players to join
+  COUNTDOWN: "countdown", // 3-2-1-GO countdown
+  RACING: "racing", // Race in progress
+  PAUSED: "paused", // Race paused by host
+  FINISHED: "finished", // Race completed
 };
 
 // Race settings
-const MIN_PLAYERS_TO_START = 2; // Minimum players needed to start (set to 2 for testing, change to 3 for production)
-const RACE_DISTANCE = 1000; // meters to finish line
+const MIN_PLAYERS_TO_START = 2; // Minimum players needed to start
+const DEFAULT_RACE_DISTANCE = 1000; // Default meters to finish line
 const COUNTDOWN_SECONDS = 3;
 
 // Game state structure for each room
@@ -115,30 +121,43 @@ io.on("connection", (socket) => {
         countdownStartTime: null,
         countdownValue: 0,
         finishOrder: [],
-        raceDistance: RACE_DISTANCE,
+        raceDistance: DEFAULT_RACE_DISTANCE,
+        pausedAt: null, // Track when race was paused
       };
     }
 
-    // Check if race already started - late joiners become spectators or join waiting room
+    // Check if race already started - late joiners rejected
     const room = rooms[roomCode];
-    if (room.raceState === RACE_STATE.RACING || room.raceState === RACE_STATE.COUNTDOWN) {
+    if (
+      room.raceState === RACE_STATE.RACING ||
+      room.raceState === RACE_STATE.COUNTDOWN ||
+      room.raceState === RACE_STATE.PAUSED
+    ) {
       socket.emit("error", "Race already in progress. Wait for it to finish.");
       socket.leave(roomCode);
       return;
     }
 
-    // In waiting state, all players start at position 0
-    const spawnWorldY = 0;
-
     // Add to members list
     rooms[roomCode].members.push({ id: socket.id, name: name });
 
-    // Initialize player game state
+    // Calculate starting grid position (staggered rows)
     const playerIndex = rooms[roomCode].members.length - 1;
+    const gridRow = Math.floor(playerIndex / 2); // 2 cars per row
+    const gridCol = playerIndex % 2; // Left or right side
+
+    // X position: alternate left (0.3) and right (0.7) of road
+    const startX = gridCol === 0 ? 0.35 : 0.65;
+    // Y position: stagger rows back from start line
+    const startWorldY = gridRow * 60; // Each row 60 pixels behind
+
+    // Initialize player game state
     rooms[roomCode].players[socket.id] = {
       name: name,
-      x: 0.5, // Normalized position (0-1, center of road)
-      worldY: 0, // Everyone starts at 0
+      x: startX, // Grid position
+      startX: startX, // Remember starting X for reset
+      worldY: startWorldY, // Staggered start position
+      startWorldY: startWorldY, // Remember for reset
       distance: 0,
       color: getPlayerColor(playerIndex),
       stunned: false,
@@ -146,6 +165,7 @@ io.on("connection", (socket) => {
       finished: false,
       finishTime: null,
       position: null,
+      gridPosition: playerIndex + 1, // 1-based grid position
     };
 
     // Check if we have enough players to start
@@ -181,6 +201,38 @@ io.on("connection", (socket) => {
     });
   });
 
+  // Handle SET RACE DISTANCE request (only creator, only in waiting state)
+  socket.on("set-race-distance", (data) => {
+    const roomCode = socket.roomCode;
+    if (!roomCode || !rooms[roomCode]) return;
+
+    const room = rooms[roomCode];
+
+    // Only creator can set distance
+    if (room.creatorId !== socket.id) {
+      socket.emit("error", "Only the room creator can set race distance");
+      return;
+    }
+
+    // Only in waiting state
+    if (room.raceState !== RACE_STATE.WAITING) {
+      socket.emit("error", "Can only set distance before race starts");
+      return;
+    }
+
+    const distance = parseInt(data.distance) || DEFAULT_RACE_DISTANCE;
+    room.raceDistance = Math.max(100, Math.min(10000, distance)); // Clamp between 100-10000m
+
+    console.log(
+      `Room [${roomCode}] race distance set to ${room.raceDistance}m`,
+    );
+
+    // Notify all players
+    io.to(roomCode).emit("race-distance-changed", {
+      distance: room.raceDistance,
+    });
+  });
+
   // Handle START RACE request (only creator can start)
   socket.on("start-race", () => {
     const roomCode = socket.roomCode;
@@ -197,7 +249,10 @@ io.on("connection", (socket) => {
     // Check minimum players
     const playerCount = Object.keys(room.players).length;
     if (playerCount < MIN_PLAYERS_TO_START) {
-      socket.emit("error", `Need at least ${MIN_PLAYERS_TO_START} players to start`);
+      socket.emit(
+        "error",
+        `Need at least ${MIN_PLAYERS_TO_START} players to start`,
+      );
       return;
     }
 
@@ -217,8 +272,38 @@ io.on("connection", (socket) => {
     // Notify all players
     io.to(roomCode).emit("race-countdown", {
       countdown: COUNTDOWN_SECONDS,
-      message: "Race starting!"
+      message: "Race starting!",
     });
+  });
+
+  // Handle PAUSE/RESUME race (only creator)
+  socket.on("toggle-pause", () => {
+    const roomCode = socket.roomCode;
+    if (!roomCode || !rooms[roomCode]) return;
+
+    const room = rooms[roomCode];
+
+    // Only creator can pause
+    if (room.creatorId !== socket.id) {
+      socket.emit("error", "Only the room creator can pause the race");
+      return;
+    }
+
+    if (room.raceState === RACE_STATE.RACING) {
+      // Pause the race
+      room.raceState = RACE_STATE.PAUSED;
+      room.pausedAt = Date.now();
+      console.log(`Room [${roomCode}] race paused`);
+      io.to(roomCode).emit("race-paused", { message: "Race paused by host" });
+    } else if (room.raceState === RACE_STATE.PAUSED) {
+      // Resume the race
+      const pauseDuration = Date.now() - room.pausedAt;
+      room.raceStartTime += pauseDuration; // Adjust start time to account for pause
+      room.raceState = RACE_STATE.RACING;
+      room.pausedAt = null;
+      console.log(`Room [${roomCode}] race resumed`);
+      io.to(roomCode).emit("race-resumed", { message: "Race resumed!" });
+    }
   });
 
   // Handle player state updates from clients
@@ -227,7 +312,7 @@ io.on("connection", (socket) => {
     if (roomCode && rooms[roomCode] && rooms[roomCode].players[socket.id]) {
       const room = rooms[roomCode];
       const player = room.players[socket.id];
-      
+
       // Only allow movement during racing state
       if (room.raceState === RACE_STATE.RACING && !player.finished) {
         player.x = data.x;
@@ -242,7 +327,9 @@ io.on("connection", (socket) => {
           room.finishOrder.push(socket.id);
           player.position = room.finishOrder.length;
 
-          console.log(`Player [${player.name}] finished in position ${player.position}!`);
+          console.log(
+            `Player [${player.name}] finished in position ${player.position}!`,
+          );
 
           // Notify all players
           io.to(roomCode).emit("player-finished", {
@@ -252,7 +339,9 @@ io.on("connection", (socket) => {
           });
 
           // Check if all players finished
-          const allFinished = Object.values(room.players).every(p => p.finished);
+          const allFinished = Object.values(room.players).every(
+            (p) => p.finished,
+          );
           if (allFinished) {
             room.raceState = RACE_STATE.FINISHED;
             io.to(roomCode).emit("race-finished", {
@@ -281,17 +370,30 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // Reset all players to starting position
+    // Reset all players to starting grid position
+    let playerIndex = 0;
     for (const playerId in room.players) {
       const player = room.players[playerId];
-      player.worldY = 0;
+
+      // Calculate grid position (same logic as joining)
+      const gridRow = Math.floor(playerIndex / 2);
+      const gridCol = playerIndex % 2;
+      const startX = gridCol === 0 ? 0.35 : 0.65;
+      const startWorldY = gridRow * 60;
+
+      player.worldY = startWorldY;
+      player.startWorldY = startWorldY;
       player.distance = 0;
-      player.x = 0.5;
+      player.x = startX;
+      player.startX = startX;
       player.stunned = false;
       player.stunnedUntil = 0;
       player.finished = false;
       player.finishTime = null;
       player.position = null;
+      player.gridPosition = playerIndex + 1;
+
+      playerIndex++;
     }
 
     // Clear obstacles
@@ -371,20 +473,19 @@ setInterval(() => {
   for (const roomCode in rooms) {
     const room = rooms[roomCode];
     if (room.members.length > 0) {
-      
       // Handle countdown state
       if (room.raceState === RACE_STATE.COUNTDOWN) {
         const elapsed = now - room.countdownStartTime;
         const newCountdown = COUNTDOWN_SECONDS - Math.floor(elapsed / 1000);
-        
+
         if (newCountdown !== room.countdownValue && newCountdown >= 0) {
           room.countdownValue = newCountdown;
           io.to(roomCode).emit("race-countdown", {
             countdown: newCountdown,
-            message: newCountdown > 0 ? newCountdown.toString() : "GO!"
+            message: newCountdown > 0 ? newCountdown.toString() : "GO!",
           });
         }
-        
+
         // Countdown finished - start race!
         if (elapsed >= COUNTDOWN_SECONDS * 1000) {
           room.raceState = RACE_STATE.RACING;
@@ -393,7 +494,7 @@ setInterval(() => {
           console.log(`Room [${roomCode}] race started!`);
           io.to(roomCode).emit("race-started", {
             raceDistance: room.raceDistance,
-            startTime: room.raceStartTime
+            startTime: room.raceStartTime,
           });
         }
       }
@@ -488,7 +589,8 @@ setInterval(() => {
         }
 
         // Remove obstacles that are behind all players (worldY greater than maxWorldY + buffer)
-        const despawnBufferPixels = OBSTACLE_DESPAWN_DISTANCE * PIXELS_PER_METER;
+        const despawnBufferPixels =
+          OBSTACLE_DESPAWN_DISTANCE * PIXELS_PER_METER;
         room.obstacles = room.obstacles.filter(
           (obs) => obs.worldY < maxWorldY + despawnBufferPixels,
         );
@@ -496,11 +598,11 @@ setInterval(() => {
 
       // Build leaderboard (top 5 by distance)
       const leaderboard = Object.entries(room.players)
-        .map(([id, p]) => ({ 
-          name: p.name, 
+        .map(([id, p]) => ({
+          name: p.name,
           distance: p.distance,
           finished: p.finished,
-          position: p.position
+          position: p.position,
         }))
         .sort((a, b) => {
           // Finished players first, by position

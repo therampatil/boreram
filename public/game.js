@@ -1,3 +1,8 @@
+/**
+ * Neon Racer - Game Engine
+ * @created by therampatil
+ */
+
 // Game Engine - Infinite Road with World Coordinates
 const Game = (function () {
   let canvas, ctx;
@@ -90,16 +95,25 @@ const Game = (function () {
   let boostParticles = [];
 
   // Race state
-  let raceState = 'waiting'; // waiting, countdown, racing, finished
+  let raceState = "waiting"; // waiting, countdown, racing, paused, finished
   let raceDistance = 1000; // meters to finish
   let countdownValue = 0;
   let raceTime = 0;
+  let finalRaceTime = 0; // Time when race ended (for display)
   let playerFinishedData = null;
   let raceResults = null;
   let myPosition = null;
+  let myFinished = false; // Track if THIS player has finished
 
   // Initialize the game
-  function init(canvasElement, socketInstance, id, color, spawnWorldY = 0, distance = 1000) {
+  function init(
+    canvasElement,
+    socketInstance,
+    id,
+    color,
+    spawnWorldY = 0,
+    distance = 1000,
+  ) {
     canvas = canvasElement;
     ctx = canvas.getContext("2d");
     raceDistance = distance;
@@ -155,27 +169,29 @@ const Game = (function () {
     isBoosting = false;
     boostParticles = [];
     obstacles = [];
-    
+
     // Reset race state
-    raceState = 'waiting';
+    raceState = "waiting";
     countdownValue = 0;
     raceTime = 0;
+    finalRaceTime = 0;
     playerFinishedData = null;
     raceResults = null;
     myPosition = null;
+    myFinished = false;
 
     console.log("Game reset");
   }
 
   // Called when countdown starts
   function showCountdown(value) {
-    raceState = 'countdown';
+    raceState = "countdown";
     countdownValue = value;
   }
 
   // Called when race starts
   function startRacing(distance) {
-    raceState = 'racing';
+    raceState = "racing";
     raceDistance = distance || 1000;
     countdownValue = 0;
   }
@@ -184,13 +200,29 @@ const Game = (function () {
   function playerFinished(data) {
     if (data.name === (otherPlayers[playerId]?.name || "You")) {
       myPosition = data.position;
+      myFinished = true; // This player has finished - stop their movement
     }
   }
 
   // Called when race ends
   function showResults(results) {
-    raceState = 'finished';
+    raceState = "finished";
     raceResults = results;
+    finalRaceTime = raceTime; // Freeze the time display
+  }
+
+  // Called when race is paused/resumed
+  function setPaused(isPaused) {
+    if (isPaused) {
+      raceState = "paused";
+    } else {
+      raceState = "racing";
+    }
+  }
+
+  // Called when race distance is changed (before race starts)
+  function setRaceDistance(distance) {
+    raceDistance = distance || 1000;
   }
 
   function setupSocketListeners() {
@@ -208,7 +240,7 @@ const Game = (function () {
 
       // Update server-controlled speed (0 when not racing)
       serverSpeed = data.gameSpeed || 0;
-      
+
       // Update race state from server
       if (data.raceState) {
         raceState = data.raceState;
@@ -326,8 +358,8 @@ const Game = (function () {
   function update() {
     const now = Date.now();
 
-    // Only allow movement during racing state
-    const canMove = raceState === 'racing';
+    // Only allow movement during racing state AND if player hasn't finished
+    const canMove = raceState === "racing" && !myFinished;
 
     // Check if stun has expired
     if (isStunned && now >= stunnedUntil) {
@@ -456,17 +488,22 @@ const Game = (function () {
     if (playersEl) {
       playersEl.textContent = Object.keys(otherPlayers).length;
     }
-    if (timeEl && raceTime > 0) {
-      timeEl.textContent = formatRaceTime(raceTime);
+    if (timeEl) {
+      // Show final time when race is finished, otherwise show current time
+      const displayTime = raceState === "finished" ? finalRaceTime : raceTime;
+      if (displayTime > 0) {
+        timeEl.textContent = formatRaceTime(displayTime);
+      }
     }
     if (statusEl) {
       const states = {
-        'waiting': 'Waiting',
-        'countdown': 'Starting...',
-        'racing': 'Racing!',
-        'finished': 'Finished'
+        waiting: "Waiting",
+        countdown: "Starting...",
+        racing: "Racing!",
+        paused: "Paused",
+        finished: "Finished",
       };
-      statusEl.textContent = states[raceState] || 'Waiting';
+      statusEl.textContent = states[raceState] || "Waiting";
     }
   }
 
@@ -681,7 +718,7 @@ const Game = (function () {
           roadX + i * squareSize,
           screenY - squareSize + row * squareSize,
           squareSize,
-          squareSize
+          squareSize,
         );
       }
     }
@@ -717,7 +754,7 @@ const Game = (function () {
           roadX + i * squareSize,
           screenY - squareSize + row * squareSize,
           squareSize,
-          squareSize
+          squareSize,
         );
       }
     }
@@ -738,32 +775,44 @@ const Game = (function () {
     ctx.save();
     ctx.textAlign = "center";
 
-    if (raceState === 'waiting') {
+    if (raceState === "waiting") {
       // Waiting for race to start
       ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
       ctx.fillRect(canvas.width / 2 - 150, canvas.height / 2 - 60, 300, 120);
-      
+
       ctx.font = 'bold 24px "Courier New", monospace';
       ctx.fillStyle = "#33ff33";
-      ctx.fillText("WAITING FOR PLAYERS", canvas.width / 2, canvas.height / 2 - 20);
-      
+      ctx.fillText(
+        "WAITING FOR PLAYERS",
+        canvas.width / 2,
+        canvas.height / 2 - 20,
+      );
+
       ctx.font = '14px "Courier New", monospace';
       ctx.fillStyle = "#888888";
-      ctx.fillText("Host will start the race", canvas.width / 2, canvas.height / 2 + 20);
+      ctx.fillText(
+        "Host will start the race",
+        canvas.width / 2,
+        canvas.height / 2 + 20,
+      );
     }
-    
-    if (raceState === 'countdown' && countdownValue >= 0) {
+
+    if (raceState === "countdown" && countdownValue >= 0) {
       // Countdown overlay
       ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
+
       ctx.font = 'bold 120px "Courier New", monospace';
       ctx.shadowBlur = 30;
-      
+
       if (countdownValue > 0) {
         ctx.fillStyle = "#ffdd00";
         ctx.shadowColor = "#ffdd00";
-        ctx.fillText(countdownValue.toString(), canvas.width / 2, canvas.height / 2 + 40);
+        ctx.fillText(
+          countdownValue.toString(),
+          canvas.width / 2,
+          canvas.height / 2 + 40,
+        );
       } else {
         ctx.fillStyle = "#00ff00";
         ctx.shadowColor = "#00ff00";
@@ -772,41 +821,72 @@ const Game = (function () {
       ctx.shadowBlur = 0;
     }
 
-    if (raceState === 'finished' && raceResults) {
+    // Paused overlay
+    if (raceState === "paused") {
+      ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.font = 'bold 60px "Courier New", monospace';
+      ctx.fillStyle = "#ffe66d";
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = "#ffe66d";
+      ctx.fillText("PAUSED", canvas.width / 2, canvas.height / 2 - 20);
+      ctx.shadowBlur = 0;
+
+      ctx.font = '16px "Courier New", monospace';
+      ctx.fillStyle = "#888888";
+      ctx.fillText(
+        "Host will resume the race",
+        canvas.width / 2,
+        canvas.height / 2 + 30,
+      );
+    }
+
+    if (raceState === "finished" && raceResults) {
       // Results overlay
       ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
       ctx.fillRect(canvas.width / 2 - 180, 50, 360, 300);
-      
+
       ctx.font = 'bold 28px "Courier New", monospace';
       ctx.fillStyle = "#ffdd00";
       ctx.shadowBlur = 10;
       ctx.shadowColor = "#ffdd00";
       ctx.fillText("🏆 RACE COMPLETE 🏆", canvas.width / 2, 100);
       ctx.shadowBlur = 0;
-      
+
       ctx.font = '16px "Courier New", monospace';
       raceResults.forEach((r, index) => {
         const y = 140 + index * 30;
-        const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "  ";
+        const medal =
+          index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "  ";
         const timeStr = formatRaceTime(r.time);
-        
-        ctx.fillStyle = r.name === (otherPlayers[playerId]?.name) ? "#33ff33" : "#ffffff";
-        ctx.fillText(`${medal} ${getOrdinal(r.position)} - ${r.name} (${timeStr})`, canvas.width / 2, y);
+
+        ctx.fillStyle =
+          r.name === otherPlayers[playerId]?.name ? "#33ff33" : "#ffffff";
+        ctx.fillText(
+          `${medal} ${getOrdinal(r.position)} - ${r.name} (${timeStr})`,
+          canvas.width / 2,
+          y,
+        );
       });
-      
+
       ctx.font = '12px "Courier New", monospace';
       ctx.fillStyle = "#888888";
       ctx.fillText("Host can start a new race", canvas.width / 2, 320);
     }
 
     // Show position when player finishes
-    if (myPosition && raceState === 'racing') {
+    if (myPosition && raceState === "racing") {
       ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
       ctx.fillRect(canvas.width / 2 - 100, 60, 200, 50);
-      
+
       ctx.font = 'bold 20px "Courier New", monospace';
       ctx.fillStyle = "#33ff33";
-      ctx.fillText(`You finished ${getOrdinal(myPosition)}!`, canvas.width / 2, 95);
+      ctx.fillText(
+        `You finished ${getOrdinal(myPosition)}!`,
+        canvas.width / 2,
+        95,
+      );
     }
 
     ctx.restore();
@@ -818,7 +898,7 @@ const Game = (function () {
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     const millis = Math.floor((ms % 1000) / 10);
-    return `${minutes}:${seconds.toString().padStart(2, '0')}.${millis.toString().padStart(2, '0')}`;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}.${millis.toString().padStart(2, "0")}`;
   }
 
   function getOrdinal(n) {
@@ -1338,6 +1418,8 @@ const Game = (function () {
     startRacing,
     playerFinished,
     showResults,
+    setPaused,
+    setRaceDistance,
     isRunning: () => gameRunning,
   };
 })();

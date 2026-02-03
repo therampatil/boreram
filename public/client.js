@@ -1,3 +1,8 @@
+/**
+ * Neon Racer - Client Socket Handler
+ * @created by therampatil
+ */
+
 const socket = io();
 
 // DOM Elements
@@ -14,10 +19,14 @@ const restartBtn = document.getElementById("restart-btn");
 const startRaceBtn = document.getElementById("start-race-btn");
 const lobbyMessage = document.getElementById("lobby-message");
 const lobbyStatus = document.getElementById("lobby-status");
+const pauseBtn = document.getElementById("pause-btn");
+const newRoomBtn = document.getElementById("new-room-btn");
+const distanceSelector = document.getElementById("distance-selector");
+const raceDistanceSelect = document.getElementById("race-distance-select");
 
 // Track game state
 let isCreator = false;
-let raceState = 'waiting';
+let raceState = "waiting";
 let minPlayers = 2;
 let canStart = false;
 
@@ -64,7 +73,7 @@ socket.on("joined", (data) => {
   addLog(`> joined room [${data.roomCode}]`);
 
   // Store race info
-  raceState = data.raceState || 'waiting';
+  raceState = data.raceState || "waiting";
   minPlayers = data.minPlayers || 2;
   canStart = data.canStart || false;
 
@@ -75,8 +84,12 @@ socket.on("joined", (data) => {
   isCreator = data.isCreator || false;
   if (isCreator) {
     addLog("> you are the host. you can start the race.");
-    if (canStart && raceState === 'waiting') {
+    if (canStart && raceState === "waiting") {
       startRaceBtn.classList.remove("hidden");
+    }
+    // Show distance selector for host
+    if (distanceSelector && raceState === "waiting") {
+      distanceSelector.classList.remove("hidden");
     }
   }
 
@@ -93,7 +106,7 @@ socket.on("joined", (data) => {
       data.playerId,
       data.playerColor,
       0,
-      data.raceDistance
+      data.raceDistance,
     );
     Game.start();
     addLog("> waiting for race to start...");
@@ -105,14 +118,14 @@ socket.on("joined", (data) => {
 socket.on("user-joined", (data) => {
   addLog(`> ${data.name} connected`);
   updateMembers(data.members);
-  
+
   // Update can start status
   canStart = data.canStart;
-  if (isCreator && canStart && raceState === 'waiting') {
+  if (isCreator && canStart && raceState === "waiting") {
     startRaceBtn.classList.remove("hidden");
     addLog("> enough players! you can start the race now.");
   }
-  
+
   updatePlayerCount(data.playerCount);
 });
 
@@ -130,39 +143,49 @@ socket.on("error", (msg) => {
 // Handle game restart from server
 socket.on("game-restarted", (data) => {
   addLog(`> ${data.message}`);
-  raceState = data.raceState || 'waiting';
+  raceState = data.raceState || "waiting";
   canStart = data.canStart;
-  
+
   // Show/hide buttons
-  if (isCreator && canStart && raceState === 'waiting') {
+  if (isCreator && canStart && raceState === "waiting") {
     startRaceBtn.classList.remove("hidden");
     restartBtn.classList.add("hidden");
   }
-  
-  // Hide lobby message
+
+  // Hide pause button on restart
+  if (pauseBtn) {
+    pauseBtn.classList.add("hidden");
+  }
+
+  // Show distance selector for host
+  if (isCreator && distanceSelector) {
+    distanceSelector.classList.remove("hidden");
+  }
+
+  // Show lobby message
   if (lobbyMessage) {
     lobbyMessage.classList.remove("hidden");
   }
-  
+
   // Reset game
   if (typeof Game !== "undefined") {
     Game.reset();
   }
-  
+
   updatePlayerCount(data.playerCount);
 });
 
 // Handle race countdown
 socket.on("race-countdown", (data) => {
-  raceState = 'countdown';
+  raceState = "countdown";
   startRaceBtn.classList.add("hidden");
-  
+
   if (lobbyMessage) {
     lobbyMessage.classList.add("hidden");
   }
-  
+
   addLog(`> ${data.message}`);
-  
+
   if (typeof Game !== "undefined") {
     Game.showCountdown(data.countdown);
   }
@@ -170,10 +193,21 @@ socket.on("race-countdown", (data) => {
 
 // Handle race started
 socket.on("race-started", (data) => {
-  raceState = 'racing';
+  raceState = "racing";
   addLog("> GO! Race started!");
   addLog("> use arrow keys or A/D to move, W/↑ to boost");
-  
+
+  // Show pause button for host during race
+  if (isCreator && pauseBtn) {
+    pauseBtn.classList.remove("hidden");
+    pauseBtn.textContent = "[Pause]";
+  }
+
+  // Hide distance selector
+  if (distanceSelector) {
+    distanceSelector.classList.add("hidden");
+  }
+
   if (typeof Game !== "undefined") {
     Game.startRacing(data.raceDistance);
   }
@@ -183,7 +217,7 @@ socket.on("race-started", (data) => {
 socket.on("player-finished", (data) => {
   const timeStr = formatTime(data.time);
   addLog(`> ${data.name} finished ${getOrdinal(data.position)}! (${timeStr})`);
-  
+
   if (typeof Game !== "undefined") {
     Game.playerFinished(data);
   }
@@ -191,21 +225,69 @@ socket.on("player-finished", (data) => {
 
 // Handle race finished
 socket.on("race-finished", (data) => {
-  raceState = 'finished';
+  raceState = "finished";
   addLog("> === RACE FINISHED ===");
-  
+
   data.results.forEach((r) => {
     const timeStr = formatTime(r.time);
     addLog(`> ${getOrdinal(r.position)}: ${r.name} - ${timeStr}`);
   });
-  
+
+  // Hide pause button
+  if (pauseBtn) {
+    pauseBtn.classList.add("hidden");
+  }
+
   if (isCreator) {
     restartBtn.classList.remove("hidden");
     addLog("> click [New Race] to race again!");
   }
-  
+
   if (typeof Game !== "undefined") {
     Game.showResults(data.results);
+  }
+});
+
+// Handle race paused
+socket.on("race-paused", (data) => {
+  raceState = "paused";
+  addLog(`> ${data.message}`);
+
+  // Show pause button as Resume for host
+  if (isCreator && pauseBtn) {
+    pauseBtn.textContent = "[Resume]";
+  }
+
+  if (typeof Game !== "undefined" && Game.setPaused) {
+    Game.setPaused(true);
+  }
+});
+
+// Handle race resumed
+socket.on("race-resumed", (data) => {
+  raceState = "racing";
+  addLog(`> ${data.message}`);
+
+  // Show pause button as Pause for host
+  if (isCreator && pauseBtn) {
+    pauseBtn.textContent = "[Pause]";
+  }
+
+  if (typeof Game !== "undefined" && Game.setPaused) {
+    Game.setPaused(false);
+  }
+});
+
+// Handle race distance changed
+socket.on("race-distance-changed", (data) => {
+  addLog(`> race distance set to ${data.distance}m`);
+
+  // Update UI
+  const statFinish = document.getElementById("stat-finish");
+  if (statFinish) statFinish.textContent = data.distance + "m";
+
+  if (typeof Game !== "undefined" && Game.setRaceDistance) {
+    Game.setRaceDistance(data.distance);
   }
 });
 
@@ -227,6 +309,55 @@ if (restartBtn) {
     socket.emit("restart-game");
     restartBtn.classList.add("hidden");
     addLog("> setting up new race...");
+  });
+}
+
+// Pause button functionality (only for creator during race)
+if (pauseBtn) {
+  pauseBtn.addEventListener("click", () => {
+    if (!isCreator) return;
+    socket.emit("toggle-pause");
+  });
+}
+
+// New room button functionality
+if (newRoomBtn) {
+  newRoomBtn.addEventListener("click", () => {
+    // Go back to join screen with a fresh state
+    gameScreen.classList.add("hidden");
+    joinScreen.classList.remove("hidden");
+
+    // Clear the room code input to encourage a new room
+    document.getElementById("room-code").value = "";
+
+    // Clear URL params
+    window.history.replaceState({}, "", window.location.pathname);
+
+    // Reset state
+    isCreator = false;
+    raceState = "waiting";
+    canStart = false;
+
+    // Clear status log
+    statusLog.innerHTML = "<p>> Ready to join a new room...</p>";
+
+    // Hide all buttons
+    startRaceBtn.classList.add("hidden");
+    restartBtn.classList.add("hidden");
+    if (pauseBtn) pauseBtn.classList.add("hidden");
+    if (distanceSelector) distanceSelector.classList.add("hidden");
+
+    // Clear error message
+    errorMsg.textContent = "";
+  });
+}
+
+// Distance selector (host only)
+if (raceDistanceSelect) {
+  raceDistanceSelect.addEventListener("change", (e) => {
+    if (!isCreator) return;
+    const distance = parseInt(e.target.value);
+    socket.emit("set-race-distance", { distance });
   });
 }
 
@@ -290,7 +421,7 @@ function formatTime(ms) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   const millis = Math.floor((ms % 1000) / 10);
-  return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${millis.toString().padStart(2, '0')}`;
+  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}.${millis.toString().padStart(2, "0")}`;
 }
 
 // Helper: Get ordinal suffix (1st, 2nd, 3rd, etc.)
@@ -306,12 +437,12 @@ function updateRaceInfo(playerCount, raceDistance) {
   const statMinPlayers = document.getElementById("stat-min-players");
   const statFinish = document.getElementById("stat-finish");
   const statStatus = document.getElementById("stat-status");
-  
+
   if (statPlayers) statPlayers.textContent = playerCount || 0;
   if (statMinPlayers) statMinPlayers.textContent = minPlayers;
   if (statFinish) statFinish.textContent = (raceDistance || 1000) + "m";
   if (statStatus) statStatus.textContent = "Waiting";
-  
+
   // Update lobby status
   if (lobbyStatus) {
     if (playerCount >= minPlayers) {
@@ -326,7 +457,7 @@ function updateRaceInfo(playerCount, raceDistance) {
 function updatePlayerCount(count) {
   const statPlayers = document.getElementById("stat-players");
   if (statPlayers) statPlayers.textContent = count || 0;
-  
+
   // Update lobby status
   if (lobbyStatus) {
     if (count >= minPlayers) {
@@ -335,4 +466,57 @@ function updatePlayerCount(count) {
       lobbyStatus.textContent = `> Need ${minPlayers - count} more player(s)`;
     }
   }
+}
+
+// Distance selector change
+if (distanceSelector) {
+  distanceSelector.addEventListener("change", (e) => {
+    const selectedDistance = parseInt(e.target.value, 10);
+    if (isNaN(selectedDistance)) return;
+
+    // Update race distance on server
+    socket.emit("update-distance", selectedDistance);
+
+    addLog(`> race distance set to ${selectedDistance} meters`);
+  });
+}
+
+// New room button (visible only to creator)
+if (newRoomBtn) {
+  newRoomBtn.addEventListener("click", () => {
+    if (!isCreator) return;
+
+    // Leave current room
+    socket.emit("leave-room");
+
+    // Optionally, redirect to a new room URL or generate a new room code
+    const newRoomCode = Math.random()
+      .toString(36)
+      .substring(2, 8)
+      .toUpperCase();
+    document.getElementById("room-code").value = newRoomCode;
+
+    addLog(`> new room created: ${newRoomCode}`);
+  });
+}
+
+// Pause button (client-side only, for now)
+if (pauseBtn) {
+  pauseBtn.addEventListener("click", () => {
+    if (raceState !== "racing") return;
+
+    // Toggle pause state
+    const isPaused = Game.togglePause();
+
+    if (isPaused) {
+      addLog("> race paused. click [Resume] to continue.");
+      pauseBtn.textContent = "Resume";
+    } else {
+      addLog("> race resumed.");
+      pauseBtn.textContent = "Pause";
+    }
+
+    // Optionally, emit pause/resume event to server
+    socket.emit("toggle-pause", isPaused);
+  });
 }

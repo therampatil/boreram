@@ -1,4 +1,8 @@
 <!doctype html>
+<!--
+  Neon Racer - Multiplayer Browser Racing Game
+  @created by therampatil
+-->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -49,8 +53,14 @@
           <span class="prompt">$</span> room: <span id="display-room"></span> |
           user: <span id="display-name"></span>
           <button id="share-btn" class="share-btn">[Share Link]</button>
-          <button id="start-race-btn" class="start-btn hidden">[Start Race]</button>
-          <button id="restart-btn" class="restart-btn hidden">[New Race]</button>
+          <button id="new-room-btn" class="new-room-btn">[New Room]</button>
+          <button id="start-race-btn" class="start-btn hidden">
+            [Start Race]
+          </button>
+          <button id="pause-btn" class="pause-btn hidden">[Pause]</button>
+          <button id="restart-btn" class="restart-btn hidden">
+            [New Race]
+          </button>
         </div>
         <div class="game-layout-container">
           <!-- Left Panel: Details -->
@@ -77,7 +87,10 @@
                 <span>status:</span> <span id="stat-status">Waiting</span>
               </div>
               <div class="stat-row">
-                <span>players:</span> <span id="stat-players">0</span>/<span id="stat-min-players">2</span>
+                <span>players:</span> <span id="stat-players">0</span>/<span
+                  id="stat-min-players"
+                  >2</span
+                >
               </div>
               <div class="stat-row">
                 <span>speed:</span> <span id="stat-speed">0</span>
@@ -96,6 +109,16 @@
             <div id="lobby-message" class="lobby-message">
               <p>> Waiting for players...</p>
               <p id="lobby-status">> Need more players to start</p>
+              <!-- Race distance selector (host only) -->
+              <div id="distance-selector" class="distance-selector hidden">
+                <label>> Race Distance:</label>
+                <select id="race-distance-select" title="Select race distance">
+                  <option value="500">500m - Sprint</option>
+                  <option value="1000" selected>1000m - Standard</option>
+                  <option value="2000">2000m - Long</option>
+                  <option value="5000">5000m - Marathon</option>
+                </select>
+              </div>
             </div>
           </div>
           <!-- Right Panel: Game Canvas -->
