@@ -86,8 +86,11 @@ const Game = (function () {
   const BOOST_MULTIPLIER = 1.5;
   let isBoosting = false;
 
+  // Boost animation particles
+  let boostParticles = [];
+
   // Initialize the game
-  function init(canvasElement, socketInstance, id, color) {
+  function init(canvasElement, socketInstance, id, color, spawnWorldY = 0) {
     canvas = canvasElement;
     ctx = canvas.getContext("2d");
     socket = socketInstance;
@@ -102,10 +105,10 @@ const Game = (function () {
     resizeCanvas();
     window.addEventListener("resize", resizeCanvas);
 
-    // Initialize player position (screen X centered, world Y starts at 0)
+    // Initialize player position (screen X centered, world Y at spawn position)
     player.x = canvas.width / 2 - player.width / 2;
-    player.worldY = 0;
-    player.distance = 0;
+    player.worldY = spawnWorldY || 0;
+    player.distance = Math.abs(player.worldY) / PIXELS_PER_METER;
 
     // Initialize camera to follow player (offset so player appears near bottom)
     const initialCameraY =
@@ -113,13 +116,37 @@ const Game = (function () {
     camera.y = initialCameraY;
     camera.targetY = initialCameraY;
 
+    // Clear boost particles
+    boostParticles = [];
+
     // Setup input listeners
     setupInputListeners();
 
     // Setup socket listeners for game state
     setupSocketListeners();
 
-    console.log("Game initialized");
+    console.log("Game initialized at worldY:", spawnWorldY);
+  }
+
+  // Reset game state (called when host restarts)
+  function reset() {
+    player.x = canvas.width / 2 - player.width / 2;
+    player.worldY = 0;
+    player.distance = 0;
+    
+    const initialCameraY =
+      player.worldY - (canvas.height - player.height - PLAYER_SCREEN_Y_OFFSET);
+    camera.y = initialCameraY;
+    camera.targetY = initialCameraY;
+    
+    scrollSpeed = baseSpeed;
+    serverSpeed = baseSpeed;
+    isStunned = false;
+    isBoosting = false;
+    boostParticles = [];
+    obstacles = [];
+    
+    console.log("Game reset");
   }
 
   function setupSocketListeners() {
@@ -267,7 +294,33 @@ const Game = (function () {
 
       // Apply boost if holding up arrow/W
       isBoosting = keys.boost && !isStunned;
+      
+      // Generate boost particles when boosting
+      if (isBoosting) {
+        // Add new particles from the back of the car
+        const playerScreenY = canvas.height - player.height - PLAYER_SCREEN_Y_OFFSET;
+        for (let i = 0; i < 2; i++) {
+          boostParticles.push({
+            x: player.x + player.width / 2 + (Math.random() - 0.5) * 10,
+            y: playerScreenY + player.height,
+            vx: (Math.random() - 0.5) * 2,
+            vy: 3 + Math.random() * 3,
+            life: 1.0,
+            size: 3 + Math.random() * 4,
+            color: Math.random() > 0.5 ? '#ff6600' : '#ffaa00'
+          });
+        }
+      }
     }
+    
+    // Update boost particles
+    boostParticles = boostParticles.filter(p => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life -= 0.05;
+      p.size *= 0.95;
+      return p.life > 0;
+    });
 
     // Calculate effective speed with boost
     const effectiveSpeed = isBoosting
@@ -480,6 +533,11 @@ const Game = (function () {
     const playerScreenY =
       canvas.height - player.height - PLAYER_SCREEN_Y_OFFSET;
 
+    // Draw boost particles (flames behind car)
+    if (boostParticles.length > 0) {
+      drawBoostParticles();
+    }
+
     // Draw player car with detailed design
     const playerName = otherPlayers[playerId]?.name || "You";
     drawCar(
@@ -490,6 +548,7 @@ const Game = (function () {
       player.color,
       playerName,
       isStunned,
+      isBoosting,
     );
 
     // Draw stun indicator on canvas
@@ -648,6 +707,22 @@ const Game = (function () {
     }
   }
 
+  // Draw boost flame particles behind the car
+  function drawBoostParticles() {
+    ctx.save();
+    for (const p of boostParticles) {
+      const alpha = p.life;
+      ctx.globalAlpha = alpha;
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = p.color;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   function drawObstacles(roadX) {
     const obstacleSize = 25;
 
@@ -778,7 +853,7 @@ const Game = (function () {
   }
 
   // Draw a detailed sports car
-  function drawCar(x, y, width, height, color, name, stunned = false) {
+  function drawCar(x, y, width, height, color, name, stunned = false, boosting = false) {
     const w = width;
     const h = height;
 
@@ -787,9 +862,20 @@ const Game = (function () {
       ctx.globalAlpha = 0.5;
     }
 
+    // Boost glow effect around the car
+    if (boosting) {
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = "#ff6600";
+      ctx.fillStyle = "rgba(255, 102, 0, 0.3)";
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, y + h / 2, w * 0.8, h * 0.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
     // Add shadow for 3D pop effect
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = "black";
+    ctx.shadowBlur = boosting ? 15 : 10;
+    ctx.shadowColor = boosting ? "#ff6600" : "black";
     ctx.shadowOffsetX = 3;
     ctx.shadowOffsetY = 3;
 
@@ -886,6 +972,46 @@ const Game = (function () {
     ctx.fillRect(x + 1, y + h - 8, 10, 8);
     ctx.fillRect(x + w - 11, y + h - 8, 10, 8);
 
+    // Boost exhaust flames
+    if (boosting) {
+      const flameTime = Date.now() / 50;
+      const flameHeight = 8 + Math.sin(flameTime) * 4;
+      
+      // Left exhaust flame
+      ctx.fillStyle = "#ff6600";
+      ctx.beginPath();
+      ctx.moveTo(x + 8, y + h);
+      ctx.lineTo(x + 5, y + h + flameHeight);
+      ctx.lineTo(x + 11, y + h);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Right exhaust flame
+      ctx.beginPath();
+      ctx.moveTo(x + w - 8, y + h);
+      ctx.lineTo(x + w - 5, y + h + flameHeight);
+      ctx.lineTo(x + w - 11, y + h);
+      ctx.closePath();
+      ctx.fill();
+      
+      // Inner flame (brighter)
+      ctx.fillStyle = "#ffaa00";
+      const innerHeight = flameHeight * 0.6;
+      ctx.beginPath();
+      ctx.moveTo(x + 8, y + h);
+      ctx.lineTo(x + 6, y + h + innerHeight);
+      ctx.lineTo(x + 10, y + h);
+      ctx.closePath();
+      ctx.fill();
+      
+      ctx.beginPath();
+      ctx.moveTo(x + w - 8, y + h);
+      ctx.lineTo(x + w - 6, y + h + innerHeight);
+      ctx.lineTo(x + w - 10, y + h);
+      ctx.closePath();
+      ctx.fill();
+    }
+
     // Racing stripe (optional flair)
     ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
     ctx.fillRect(x + w * 0.45, y + h * 0.1, w * 0.1, h * 0.85);
@@ -948,6 +1074,7 @@ const Game = (function () {
     init,
     start,
     stop,
+    reset,
     isRunning: () => gameRunning,
   };
 })();

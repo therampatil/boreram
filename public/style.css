@@ -71,6 +71,22 @@ body {
   color: #4ecdc4;
 }
 
+.restart-btn {
+  background-color: transparent;
+  border: 1px solid #ff6b6b;
+  color: #ff6b6b;
+  padding: 4px 10px;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.restart-btn:hover {
+  background-color: #ff6b6b;
+  color: #0a0a0a;
+}
+
 .input-group {
   margin-bottom: 15px;
 }

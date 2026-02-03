@@ -19,7 +19,8 @@ const rooms = {};
 //   players: { [socketId]: { name, x, worldY, distance, color, stunned } },
 //   obstacles: [{ id, x, worldY, distance }],
 //   nextObstacleId: 0,
-//   lastSpawnWorldY: 0
+//   lastSpawnWorldY: 0,
+//   creatorId: socketId  // Track who created the room
 // }
 
 // Obstacle generation settings
@@ -73,21 +74,40 @@ io.on("connection", (socket) => {
     socket.roomCode = roomCode;
     socket.userName = name;
 
+    // Check if this is a new room (user is creator)
+    const isNewRoom = !rooms[roomCode];
+
     // Initialize room if needed
-    if (!rooms[roomCode]) {
+    if (isNewRoom) {
       rooms[roomCode] = {
         members: [],
         players: {},
         obstacles: [],
         nextObstacleId: 0,
-        lastSpawnWorldY: 0, // Track spawning by world Y position
-        furthestWorldY: 0, // Track the furthest player's worldY
+        lastSpawnWorldY: 0,
+        furthestWorldY: 0,
         // Dynamic difficulty state
         roadWidth: BASE_ROAD_WIDTH,
         gameSpeed: BASE_GAME_SPEED,
         lastExpansionTime: Date.now(),
         createdAt: Date.now(),
+        creatorId: socket.id, // Track room creator
       };
+    }
+
+    // Find the last player's position to spawn new player near them
+    let spawnWorldY = 0;
+    if (!isNewRoom && Object.keys(rooms[roomCode].players).length > 0) {
+      // Find the player who is furthest behind (largest worldY / least progress)
+      let maxWorldY = -Infinity;
+      for (const pid in rooms[roomCode].players) {
+        const p = rooms[roomCode].players[pid];
+        if (p.worldY > maxWorldY) {
+          maxWorldY = p.worldY;
+        }
+      }
+      // Spawn slightly behind the last player
+      spawnWorldY = maxWorldY + 100; // 100 pixels behind
     }
 
     // Add to members list
@@ -98,14 +118,14 @@ io.on("connection", (socket) => {
     rooms[roomCode].players[socket.id] = {
       name: name,
       x: 0.5, // Normalized position (0-1, center of road)
-      worldY: 0, // Absolute world Y position
-      distance: 0,
+      worldY: spawnWorldY, // Spawn at calculated position
+      distance: Math.abs(spawnWorldY) / PIXELS_PER_METER,
       color: getPlayerColor(playerIndex),
       stunned: false,
       stunnedUntil: 0,
     };
 
-    console.log(`User [${name}] joined Room [${roomCode}]`);
+    console.log(`User [${name}] joined Room [${roomCode}]${isNewRoom ? ' (creator)' : ''}`);
 
     // Notify the user they joined successfully
     socket.emit("joined", {
@@ -114,6 +134,8 @@ io.on("connection", (socket) => {
       members: rooms[roomCode].members,
       playerId: socket.id,
       playerColor: rooms[roomCode].players[socket.id].color,
+      isCreator: rooms[roomCode].creatorId === socket.id,
+      spawnWorldY: spawnWorldY,
     });
 
     // Notify others in the room
@@ -133,6 +155,46 @@ io.on("connection", (socket) => {
       player.distance = data.distance;
       player.stunned = data.stunned || false;
     }
+  });
+
+  // Handle restart game request (only creator can restart)
+  socket.on("restart-game", () => {
+    const roomCode = socket.roomCode;
+    if (!roomCode || !rooms[roomCode]) return;
+
+    // Only the creator can restart
+    if (rooms[roomCode].creatorId !== socket.id) {
+      socket.emit("error", "Only the room creator can restart the game");
+      return;
+    }
+
+    // Reset all players to starting position
+    for (const playerId in rooms[roomCode].players) {
+      const player = rooms[roomCode].players[playerId];
+      player.worldY = 0;
+      player.distance = 0;
+      player.x = 0.5;
+      player.stunned = false;
+      player.stunnedUntil = 0;
+    }
+
+    // Clear obstacles
+    rooms[roomCode].obstacles = [];
+    rooms[roomCode].nextObstacleId = 0;
+    rooms[roomCode].lastSpawnWorldY = 0;
+    rooms[roomCode].furthestWorldY = 0;
+
+    // Reset difficulty
+    rooms[roomCode].roadWidth = BASE_ROAD_WIDTH;
+    rooms[roomCode].gameSpeed = BASE_GAME_SPEED;
+    rooms[roomCode].lastExpansionTime = Date.now();
+
+    console.log(`Room [${roomCode}] restarted by creator`);
+
+    // Notify all players in the room
+    io.to(roomCode).emit("game-restarted", {
+      message: "Game restarted by host!"
+    });
   });
 
   // Handle collision report from client
@@ -240,11 +302,28 @@ setInterval(() => {
       const spawnThreshold = minWorldY - spawnAheadPixels;
       while (room.lastSpawnWorldY > spawnThreshold) {
         room.lastSpawnWorldY -= spawnIntervalPixels;
+        
+        // Distribute obstacles across the FULL road width including edges
+        // 0.02 to 0.98 covers near-edge positions as well as center
+        // Use weighted random to include corners/edges more often
+        let obstacleX;
+        const zoneRoll = Math.random();
+        if (zoneRoll < 0.25) {
+          // Left edge zone (0.02 - 0.25)
+          obstacleX = Math.random() * 0.23 + 0.02;
+        } else if (zoneRoll < 0.5) {
+          // Right edge zone (0.75 - 0.98)
+          obstacleX = Math.random() * 0.23 + 0.75;
+        } else {
+          // Center zone (0.25 - 0.75)
+          obstacleX = Math.random() * 0.5 + 0.25;
+        }
+        
         const newObstacle = {
           id: room.nextObstacleId++,
-          x: Math.random() * 0.8 + 0.1, // Random position (10%-90% of road width)
+          x: obstacleX,
           worldY: room.lastSpawnWorldY,
-          distance: Math.abs(room.lastSpawnWorldY) / PIXELS_PER_METER, // For backwards compat
+          distance: Math.abs(room.lastSpawnWorldY) / PIXELS_PER_METER,
         };
         room.obstacles.push(newObstacle);
       }

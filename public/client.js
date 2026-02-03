@@ -10,6 +10,10 @@ const displayName = document.getElementById("display-name");
 const statusLog = document.getElementById("status-log");
 const membersList = document.getElementById("members");
 const shareBtn = document.getElementById("share-btn");
+const restartBtn = document.getElementById("restart-btn");
+
+// Track if current user is room creator
+let isCreator = false;
 
 // Check for room code in URL params on page load
 (function checkUrlParams() {
@@ -53,6 +57,13 @@ socket.on("joined", (data) => {
 
   addLog(`> joined room [${data.roomCode}]`);
 
+  // Check if user is the room creator
+  isCreator = data.isCreator || false;
+  if (isCreator && restartBtn) {
+    restartBtn.classList.remove("hidden");
+    addLog("> you are the host. you can restart the game.");
+  }
+
   // Update URL with room code (without reloading)
   const newUrl = `${window.location.origin}${window.location.pathname}?room=${data.roomCode}`;
   window.history.replaceState({}, "", newUrl);
@@ -60,7 +71,7 @@ socket.on("joined", (data) => {
   // Initialize and start the game with socket and player info
   const canvas = document.getElementById("game-canvas");
   if (canvas && typeof Game !== "undefined") {
-    Game.init(canvas, socket, data.playerId, data.playerColor);
+    Game.init(canvas, socket, data.playerId, data.playerColor, data.spawnWorldY);
     Game.start();
     addLog("> game started. use arrow keys or A/D to move");
     addLog("> press H to toggle stealth mode");
@@ -83,6 +94,25 @@ socket.on("user-left", (data) => {
 socket.on("error", (msg) => {
   errorMsg.textContent = `> error: ${msg}`;
 });
+
+// Handle game restart from server
+socket.on("game-restarted", (data) => {
+  addLog(`> ${data.message}`);
+  // Game.js will handle the reset via game-state updates
+  if (typeof Game !== "undefined") {
+    Game.reset();
+  }
+});
+
+// Restart button functionality (only visible to creator)
+if (restartBtn) {
+  restartBtn.addEventListener("click", () => {
+    if (!isCreator) return;
+    
+    socket.emit("restart-game");
+    addLog("> restarting game...");
+  });
+}
 
 // Helper: Add log entry
 function addLog(message) {
