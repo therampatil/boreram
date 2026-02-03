@@ -13,14 +13,31 @@ app.use(express.static(path.join(__dirname, "public")));
 // Track rooms and users with game state
 const rooms = {};
 
+// Race states
+const RACE_STATE = {
+  WAITING: 'waiting',      // Waiting for players to join
+  COUNTDOWN: 'countdown',  // 3-2-1-GO countdown
+  RACING: 'racing',        // Race in progress
+  FINISHED: 'finished'     // Race completed
+};
+
+// Race settings
+const MIN_PLAYERS_TO_START = 2; // Minimum players needed to start (set to 2 for testing, change to 3 for production)
+const RACE_DISTANCE = 1000; // meters to finish line
+const COUNTDOWN_SECONDS = 3;
+
 // Game state structure for each room
 // rooms[roomCode] = {
 //   members: [{ id, name }],
-//   players: { [socketId]: { name, x, worldY, distance, color, stunned } },
+//   players: { [socketId]: { name, x, worldY, distance, color, stunned, finished, finishTime, position } },
 //   obstacles: [{ id, x, worldY, distance }],
 //   nextObstacleId: 0,
 //   lastSpawnWorldY: 0,
-//   creatorId: socketId  // Track who created the room
+//   creatorId: socketId,
+//   raceState: 'waiting' | 'countdown' | 'racing' | 'finished',
+//   raceStartTime: null,
+//   countdownStartTime: null,
+//   finishOrder: []
 // }
 
 // Obstacle generation settings
@@ -91,24 +108,27 @@ io.on("connection", (socket) => {
         gameSpeed: BASE_GAME_SPEED,
         lastExpansionTime: Date.now(),
         createdAt: Date.now(),
-        creatorId: socket.id, // Track room creator
+        creatorId: socket.id,
+        // Race state
+        raceState: RACE_STATE.WAITING,
+        raceStartTime: null,
+        countdownStartTime: null,
+        countdownValue: 0,
+        finishOrder: [],
+        raceDistance: RACE_DISTANCE,
       };
     }
 
-    // Find the last player's position to spawn new player near them
-    let spawnWorldY = 0;
-    if (!isNewRoom && Object.keys(rooms[roomCode].players).length > 0) {
-      // Find the player who is furthest behind (largest worldY / least progress)
-      let maxWorldY = -Infinity;
-      for (const pid in rooms[roomCode].players) {
-        const p = rooms[roomCode].players[pid];
-        if (p.worldY > maxWorldY) {
-          maxWorldY = p.worldY;
-        }
-      }
-      // Spawn slightly behind the last player
-      spawnWorldY = maxWorldY + 100; // 100 pixels behind
+    // Check if race already started - late joiners become spectators or join waiting room
+    const room = rooms[roomCode];
+    if (room.raceState === RACE_STATE.RACING || room.raceState === RACE_STATE.COUNTDOWN) {
+      socket.emit("error", "Race already in progress. Wait for it to finish.");
+      socket.leave(roomCode);
+      return;
     }
+
+    // In waiting state, all players start at position 0
+    const spawnWorldY = 0;
 
     // Add to members list
     rooms[roomCode].members.push({ id: socket.id, name: name });
@@ -118,14 +138,23 @@ io.on("connection", (socket) => {
     rooms[roomCode].players[socket.id] = {
       name: name,
       x: 0.5, // Normalized position (0-1, center of road)
-      worldY: spawnWorldY, // Spawn at calculated position
-      distance: Math.abs(spawnWorldY) / PIXELS_PER_METER,
+      worldY: 0, // Everyone starts at 0
+      distance: 0,
       color: getPlayerColor(playerIndex),
       stunned: false,
       stunnedUntil: 0,
+      finished: false,
+      finishTime: null,
+      position: null,
     };
 
-    console.log(`User [${name}] joined Room [${roomCode}]${isNewRoom ? ' (creator)' : ''}`);
+    // Check if we have enough players to start
+    const playerCount = Object.keys(rooms[roomCode].players).length;
+    const canStart = playerCount >= MIN_PLAYERS_TO_START;
+
+    console.log(
+      `User [${name}] joined Room [${roomCode}]${isNewRoom ? " (creator)" : ""} (${playerCount} players)`,
+    );
 
     // Notify the user they joined successfully
     socket.emit("joined", {
@@ -135,13 +164,60 @@ io.on("connection", (socket) => {
       playerId: socket.id,
       playerColor: rooms[roomCode].players[socket.id].color,
       isCreator: rooms[roomCode].creatorId === socket.id,
-      spawnWorldY: spawnWorldY,
+      spawnWorldY: 0,
+      raceState: rooms[roomCode].raceState,
+      raceDistance: rooms[roomCode].raceDistance,
+      canStart: canStart,
+      minPlayers: MIN_PLAYERS_TO_START,
+      playerCount: playerCount,
     });
 
-    // Notify others in the room
+    // Notify others in the room about new player and updated player count
     socket.to(roomCode).emit("user-joined", {
       name: name,
       members: rooms[roomCode].members,
+      playerCount: playerCount,
+      canStart: canStart,
+    });
+  });
+
+  // Handle START RACE request (only creator can start)
+  socket.on("start-race", () => {
+    const roomCode = socket.roomCode;
+    if (!roomCode || !rooms[roomCode]) return;
+
+    const room = rooms[roomCode];
+
+    // Only creator can start
+    if (room.creatorId !== socket.id) {
+      socket.emit("error", "Only the room creator can start the race");
+      return;
+    }
+
+    // Check minimum players
+    const playerCount = Object.keys(room.players).length;
+    if (playerCount < MIN_PLAYERS_TO_START) {
+      socket.emit("error", `Need at least ${MIN_PLAYERS_TO_START} players to start`);
+      return;
+    }
+
+    // Check if already started
+    if (room.raceState !== RACE_STATE.WAITING) {
+      socket.emit("error", "Race already started");
+      return;
+    }
+
+    // Start countdown
+    room.raceState = RACE_STATE.COUNTDOWN;
+    room.countdownStartTime = Date.now();
+    room.countdownValue = COUNTDOWN_SECONDS;
+
+    console.log(`Room [${roomCode}] starting countdown...`);
+
+    // Notify all players
+    io.to(roomCode).emit("race-countdown", {
+      countdown: COUNTDOWN_SECONDS,
+      message: "Race starting!"
     });
   });
 
@@ -149,11 +225,46 @@ io.on("connection", (socket) => {
   socket.on("player-update", (data) => {
     const roomCode = socket.roomCode;
     if (roomCode && rooms[roomCode] && rooms[roomCode].players[socket.id]) {
-      const player = rooms[roomCode].players[socket.id];
-      player.x = data.x;
-      player.worldY = data.worldY !== undefined ? data.worldY : player.worldY;
-      player.distance = data.distance;
-      player.stunned = data.stunned || false;
+      const room = rooms[roomCode];
+      const player = room.players[socket.id];
+      
+      // Only allow movement during racing state
+      if (room.raceState === RACE_STATE.RACING && !player.finished) {
+        player.x = data.x;
+        player.worldY = data.worldY !== undefined ? data.worldY : player.worldY;
+        player.distance = data.distance;
+        player.stunned = data.stunned || false;
+
+        // Check if player crossed finish line
+        if (player.distance >= room.raceDistance && !player.finished) {
+          player.finished = true;
+          player.finishTime = Date.now() - room.raceStartTime;
+          room.finishOrder.push(socket.id);
+          player.position = room.finishOrder.length;
+
+          console.log(`Player [${player.name}] finished in position ${player.position}!`);
+
+          // Notify all players
+          io.to(roomCode).emit("player-finished", {
+            name: player.name,
+            position: player.position,
+            time: player.finishTime,
+          });
+
+          // Check if all players finished
+          const allFinished = Object.values(room.players).every(p => p.finished);
+          if (allFinished) {
+            room.raceState = RACE_STATE.FINISHED;
+            io.to(roomCode).emit("race-finished", {
+              results: room.finishOrder.map((id, index) => ({
+                position: index + 1,
+                name: room.players[id].name,
+                time: room.players[id].finishTime,
+              })),
+            });
+          }
+        }
+      }
     }
   });
 
@@ -162,38 +273,56 @@ io.on("connection", (socket) => {
     const roomCode = socket.roomCode;
     if (!roomCode || !rooms[roomCode]) return;
 
+    const room = rooms[roomCode];
+
     // Only the creator can restart
-    if (rooms[roomCode].creatorId !== socket.id) {
+    if (room.creatorId !== socket.id) {
       socket.emit("error", "Only the room creator can restart the game");
       return;
     }
 
     // Reset all players to starting position
-    for (const playerId in rooms[roomCode].players) {
-      const player = rooms[roomCode].players[playerId];
+    for (const playerId in room.players) {
+      const player = room.players[playerId];
       player.worldY = 0;
       player.distance = 0;
       player.x = 0.5;
       player.stunned = false;
       player.stunnedUntil = 0;
+      player.finished = false;
+      player.finishTime = null;
+      player.position = null;
     }
 
     // Clear obstacles
-    rooms[roomCode].obstacles = [];
-    rooms[roomCode].nextObstacleId = 0;
-    rooms[roomCode].lastSpawnWorldY = 0;
-    rooms[roomCode].furthestWorldY = 0;
+    room.obstacles = [];
+    room.nextObstacleId = 0;
+    room.lastSpawnWorldY = 0;
+    room.furthestWorldY = 0;
 
     // Reset difficulty
-    rooms[roomCode].roadWidth = BASE_ROAD_WIDTH;
-    rooms[roomCode].gameSpeed = BASE_GAME_SPEED;
-    rooms[roomCode].lastExpansionTime = Date.now();
+    room.roadWidth = BASE_ROAD_WIDTH;
+    room.gameSpeed = BASE_GAME_SPEED;
+    room.lastExpansionTime = Date.now();
+
+    // Reset race state
+    room.raceState = RACE_STATE.WAITING;
+    room.raceStartTime = null;
+    room.countdownStartTime = null;
+    room.countdownValue = 0;
+    room.finishOrder = [];
+
+    const playerCount = Object.keys(room.players).length;
+    const canStart = playerCount >= MIN_PLAYERS_TO_START;
 
     console.log(`Room [${roomCode}] restarted by creator`);
 
     // Notify all players in the room
     io.to(roomCode).emit("game-restarted", {
-      message: "Game restarted by host!"
+      message: "Game restarted by host!",
+      raceState: room.raceState,
+      canStart: canStart,
+      playerCount: playerCount,
     });
   });
 
@@ -242,28 +371,58 @@ setInterval(() => {
   for (const roomCode in rooms) {
     const room = rooms[roomCode];
     if (room.members.length > 0) {
-      // Update stun states
-      for (const playerId in room.players) {
-        const player = room.players[playerId];
-        if (player.stunned && now >= player.stunnedUntil) {
-          player.stunned = false;
+      
+      // Handle countdown state
+      if (room.raceState === RACE_STATE.COUNTDOWN) {
+        const elapsed = now - room.countdownStartTime;
+        const newCountdown = COUNTDOWN_SECONDS - Math.floor(elapsed / 1000);
+        
+        if (newCountdown !== room.countdownValue && newCountdown >= 0) {
+          room.countdownValue = newCountdown;
+          io.to(roomCode).emit("race-countdown", {
+            countdown: newCountdown,
+            message: newCountdown > 0 ? newCountdown.toString() : "GO!"
+          });
+        }
+        
+        // Countdown finished - start race!
+        if (elapsed >= COUNTDOWN_SECONDS * 1000) {
+          room.raceState = RACE_STATE.RACING;
+          room.raceStartTime = now;
+          room.gameSpeed = BASE_GAME_SPEED;
+          console.log(`Room [${roomCode}] race started!`);
+          io.to(roomCode).emit("race-started", {
+            raceDistance: room.raceDistance,
+            startTime: room.raceStartTime
+          });
         }
       }
 
-      // Dynamic difficulty: Increase game speed slowly each tick
-      if (room.gameSpeed < MAX_GAME_SPEED) {
-        room.gameSpeed += SPEED_INCREMENT_PER_TICK;
-        room.gameSpeed = Math.min(room.gameSpeed, MAX_GAME_SPEED);
-      }
+      // Only update game state during racing
+      if (room.raceState === RACE_STATE.RACING) {
+        // Update stun states
+        for (const playerId in room.players) {
+          const player = room.players[playerId];
+          if (player.stunned && now >= player.stunnedUntil) {
+            player.stunned = false;
+          }
+        }
 
-      // Dynamic difficulty: Expand road every 30 seconds
-      if (now - room.lastExpansionTime >= ROAD_EXPANSION_INTERVAL) {
-        room.lastExpansionTime = now;
-        const newWidth = room.roadWidth * ROAD_EXPANSION_RATE;
-        room.roadWidth = Math.min(newWidth, MAX_ROAD_WIDTH);
-        console.log(
-          `Room [${roomCode}] road expanded to ${Math.floor(room.roadWidth)}px`,
-        );
+        // Dynamic difficulty: Increase game speed slowly each tick
+        if (room.gameSpeed < MAX_GAME_SPEED) {
+          room.gameSpeed += SPEED_INCREMENT_PER_TICK;
+          room.gameSpeed = Math.min(room.gameSpeed, MAX_GAME_SPEED);
+        }
+
+        // Dynamic difficulty: Expand road every 30 seconds
+        if (now - room.lastExpansionTime >= ROAD_EXPANSION_INTERVAL) {
+          room.lastExpansionTime = now;
+          const newWidth = room.roadWidth * ROAD_EXPANSION_RATE;
+          room.roadWidth = Math.min(newWidth, MAX_ROAD_WIDTH);
+          console.log(
+            `Room [${roomCode}] road expanded to ${Math.floor(room.roadWidth)}px`,
+          );
+        }
       }
 
       // Find player positions in world Y coordinates
@@ -287,57 +446,70 @@ setInterval(() => {
         }
       }
 
-      // Generate new obstacles ahead of the leading player
-      // Obstacles spawn at negative worldY values ahead of the leader
-      const spawnAheadPixels = SPAWN_AHEAD_DISTANCE * PIXELS_PER_METER;
-      const spawnIntervalPixels = OBSTACLE_SPAWN_INTERVAL * PIXELS_PER_METER;
+      // Only spawn obstacles during racing state
+      if (room.raceState === RACE_STATE.RACING) {
+        // Generate new obstacles ahead of the leading player
+        // Obstacles spawn at negative worldY values ahead of the leader
+        const spawnAheadPixels = SPAWN_AHEAD_DISTANCE * PIXELS_PER_METER;
+        const spawnIntervalPixels = OBSTACLE_SPAWN_INTERVAL * PIXELS_PER_METER;
 
-      // Initialize spawn position if needed (start spawning ahead of current leader)
-      if (room.lastSpawnWorldY === 0 && hasPlayers) {
-        room.lastSpawnWorldY = minWorldY - spawnIntervalPixels;
-      }
-
-      // Spawn obstacles ahead of the leading player (minWorldY)
-      // We need lastSpawnWorldY to be more negative than minWorldY - spawnAhead
-      const spawnThreshold = minWorldY - spawnAheadPixels;
-      while (room.lastSpawnWorldY > spawnThreshold) {
-        room.lastSpawnWorldY -= spawnIntervalPixels;
-        
-        // Distribute obstacles across the FULL road width including edges
-        // 0.02 to 0.98 covers near-edge positions as well as center
-        // Use weighted random to include corners/edges more often
-        let obstacleX;
-        const zoneRoll = Math.random();
-        if (zoneRoll < 0.25) {
-          // Left edge zone (0.02 - 0.25)
-          obstacleX = Math.random() * 0.23 + 0.02;
-        } else if (zoneRoll < 0.5) {
-          // Right edge zone (0.75 - 0.98)
-          obstacleX = Math.random() * 0.23 + 0.75;
-        } else {
-          // Center zone (0.25 - 0.75)
-          obstacleX = Math.random() * 0.5 + 0.25;
+        // Initialize spawn position if needed (start spawning ahead of current leader)
+        if (room.lastSpawnWorldY === 0 && hasPlayers) {
+          room.lastSpawnWorldY = minWorldY - spawnIntervalPixels;
         }
-        
-        const newObstacle = {
-          id: room.nextObstacleId++,
-          x: obstacleX,
-          worldY: room.lastSpawnWorldY,
-          distance: Math.abs(room.lastSpawnWorldY) / PIXELS_PER_METER,
-        };
-        room.obstacles.push(newObstacle);
-      }
 
-      // Remove obstacles that are behind all players (worldY greater than maxWorldY + buffer)
-      const despawnBufferPixels = OBSTACLE_DESPAWN_DISTANCE * PIXELS_PER_METER;
-      room.obstacles = room.obstacles.filter(
-        (obs) => obs.worldY < maxWorldY + despawnBufferPixels,
-      );
+        // Spawn obstacles ahead of the leading player (minWorldY)
+        // We need lastSpawnWorldY to be more negative than minWorldY - spawnAhead
+        const spawnThreshold = minWorldY - spawnAheadPixels;
+        while (room.lastSpawnWorldY > spawnThreshold) {
+          room.lastSpawnWorldY -= spawnIntervalPixels;
+
+          // Distribute obstacles across the FULL road width including edges
+          let obstacleX;
+          const zoneRoll = Math.random();
+          if (zoneRoll < 0.25) {
+            // Left edge zone (0.02 - 0.25)
+            obstacleX = Math.random() * 0.23 + 0.02;
+          } else if (zoneRoll < 0.5) {
+            // Right edge zone (0.75 - 0.98)
+            obstacleX = Math.random() * 0.23 + 0.75;
+          } else {
+            // Center zone (0.25 - 0.75)
+            obstacleX = Math.random() * 0.5 + 0.25;
+          }
+
+          const newObstacle = {
+            id: room.nextObstacleId++,
+            x: obstacleX,
+            worldY: room.lastSpawnWorldY,
+            distance: Math.abs(room.lastSpawnWorldY) / PIXELS_PER_METER,
+          };
+          room.obstacles.push(newObstacle);
+        }
+
+        // Remove obstacles that are behind all players (worldY greater than maxWorldY + buffer)
+        const despawnBufferPixels = OBSTACLE_DESPAWN_DISTANCE * PIXELS_PER_METER;
+        room.obstacles = room.obstacles.filter(
+          (obs) => obs.worldY < maxWorldY + despawnBufferPixels,
+        );
+      }
 
       // Build leaderboard (top 5 by distance)
       const leaderboard = Object.entries(room.players)
-        .map(([id, p]) => ({ name: p.name, distance: p.distance }))
-        .sort((a, b) => b.distance - a.distance)
+        .map(([id, p]) => ({ 
+          name: p.name, 
+          distance: p.distance,
+          finished: p.finished,
+          position: p.position
+        }))
+        .sort((a, b) => {
+          // Finished players first, by position
+          if (a.finished && !b.finished) return -1;
+          if (!a.finished && b.finished) return 1;
+          if (a.finished && b.finished) return a.position - b.position;
+          // Then by distance
+          return b.distance - a.distance;
+        })
         .slice(0, 5);
 
       // Broadcast game state
@@ -346,7 +518,10 @@ setInterval(() => {
         obstacles: room.obstacles,
         leaderboard: leaderboard,
         roadWidth: room.roadWidth,
-        gameSpeed: room.gameSpeed,
+        gameSpeed: room.raceState === RACE_STATE.RACING ? room.gameSpeed : 0,
+        raceState: room.raceState,
+        raceDistance: room.raceDistance,
+        raceTime: room.raceStartTime ? now - room.raceStartTime : 0,
       });
     }
   }

@@ -11,9 +11,15 @@ const statusLog = document.getElementById("status-log");
 const membersList = document.getElementById("members");
 const shareBtn = document.getElementById("share-btn");
 const restartBtn = document.getElementById("restart-btn");
+const startRaceBtn = document.getElementById("start-race-btn");
+const lobbyMessage = document.getElementById("lobby-message");
+const lobbyStatus = document.getElementById("lobby-status");
 
-// Track if current user is room creator
+// Track game state
 let isCreator = false;
+let raceState = 'waiting';
+let minPlayers = 2;
+let canStart = false;
 
 // Check for room code in URL params on page load
 (function checkUrlParams() {
@@ -57,23 +63,40 @@ socket.on("joined", (data) => {
 
   addLog(`> joined room [${data.roomCode}]`);
 
+  // Store race info
+  raceState = data.raceState || 'waiting';
+  minPlayers = data.minPlayers || 2;
+  canStart = data.canStart || false;
+
+  // Update stats display
+  updateRaceInfo(data.playerCount, data.raceDistance);
+
   // Check if user is the room creator
   isCreator = data.isCreator || false;
-  if (isCreator && restartBtn) {
-    restartBtn.classList.remove("hidden");
-    addLog("> you are the host. you can restart the game.");
+  if (isCreator) {
+    addLog("> you are the host. you can start the race.");
+    if (canStart && raceState === 'waiting') {
+      startRaceBtn.classList.remove("hidden");
+    }
   }
 
   // Update URL with room code (without reloading)
   const newUrl = `${window.location.origin}${window.location.pathname}?room=${data.roomCode}`;
   window.history.replaceState({}, "", newUrl);
 
-  // Initialize and start the game with socket and player info
+  // Initialize the game (but don't start racing yet)
   const canvas = document.getElementById("game-canvas");
   if (canvas && typeof Game !== "undefined") {
-    Game.init(canvas, socket, data.playerId, data.playerColor, data.spawnWorldY);
+    Game.init(
+      canvas,
+      socket,
+      data.playerId,
+      data.playerColor,
+      0,
+      data.raceDistance
+    );
     Game.start();
-    addLog("> game started. use arrow keys or A/D to move");
+    addLog("> waiting for race to start...");
     addLog("> press H to toggle stealth mode");
   }
 });
@@ -82,6 +105,15 @@ socket.on("joined", (data) => {
 socket.on("user-joined", (data) => {
   addLog(`> ${data.name} connected`);
   updateMembers(data.members);
+  
+  // Update can start status
+  canStart = data.canStart;
+  if (isCreator && canStart && raceState === 'waiting') {
+    startRaceBtn.classList.remove("hidden");
+    addLog("> enough players! you can start the race now.");
+  }
+  
+  updatePlayerCount(data.playerCount);
 });
 
 // User left
@@ -98,19 +130,103 @@ socket.on("error", (msg) => {
 // Handle game restart from server
 socket.on("game-restarted", (data) => {
   addLog(`> ${data.message}`);
-  // Game.js will handle the reset via game-state updates
+  raceState = data.raceState || 'waiting';
+  canStart = data.canStart;
+  
+  // Show/hide buttons
+  if (isCreator && canStart && raceState === 'waiting') {
+    startRaceBtn.classList.remove("hidden");
+    restartBtn.classList.add("hidden");
+  }
+  
+  // Hide lobby message
+  if (lobbyMessage) {
+    lobbyMessage.classList.remove("hidden");
+  }
+  
+  // Reset game
   if (typeof Game !== "undefined") {
     Game.reset();
   }
+  
+  updatePlayerCount(data.playerCount);
 });
 
-// Restart button functionality (only visible to creator)
+// Handle race countdown
+socket.on("race-countdown", (data) => {
+  raceState = 'countdown';
+  startRaceBtn.classList.add("hidden");
+  
+  if (lobbyMessage) {
+    lobbyMessage.classList.add("hidden");
+  }
+  
+  addLog(`> ${data.message}`);
+  
+  if (typeof Game !== "undefined") {
+    Game.showCountdown(data.countdown);
+  }
+});
+
+// Handle race started
+socket.on("race-started", (data) => {
+  raceState = 'racing';
+  addLog("> GO! Race started!");
+  addLog("> use arrow keys or A/D to move, W/↑ to boost");
+  
+  if (typeof Game !== "undefined") {
+    Game.startRacing(data.raceDistance);
+  }
+});
+
+// Handle player finished
+socket.on("player-finished", (data) => {
+  const timeStr = formatTime(data.time);
+  addLog(`> ${data.name} finished ${getOrdinal(data.position)}! (${timeStr})`);
+  
+  if (typeof Game !== "undefined") {
+    Game.playerFinished(data);
+  }
+});
+
+// Handle race finished
+socket.on("race-finished", (data) => {
+  raceState = 'finished';
+  addLog("> === RACE FINISHED ===");
+  
+  data.results.forEach((r) => {
+    const timeStr = formatTime(r.time);
+    addLog(`> ${getOrdinal(r.position)}: ${r.name} - ${timeStr}`);
+  });
+  
+  if (isCreator) {
+    restartBtn.classList.remove("hidden");
+    addLog("> click [New Race] to race again!");
+  }
+  
+  if (typeof Game !== "undefined") {
+    Game.showResults(data.results);
+  }
+});
+
+// Start race button
+if (startRaceBtn) {
+  startRaceBtn.addEventListener("click", () => {
+    if (!isCreator || !canStart) return;
+    socket.emit("start-race");
+    startRaceBtn.classList.add("hidden");
+    addLog("> starting race...");
+  });
+}
+
+// Restart button functionality (only visible to creator after race)
 if (restartBtn) {
   restartBtn.addEventListener("click", () => {
     if (!isCreator) return;
-    
+
     socket.emit("restart-game");
-    addLog("> restarting game...");
+    restartBtn.classList.add("hidden");
+    addLog("> setting up new race...");
   });
 }
 
@@ -166,4 +282,57 @@ if (shareBtn) {
         }, 2000);
       });
   });
+}
+
+// Helper: Format time in mm:ss.ms
+function formatTime(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const millis = Math.floor((ms % 1000) / 10);
+  return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${millis.toString().padStart(2, '0')}`;
+}
+
+// Helper: Get ordinal suffix (1st, 2nd, 3rd, etc.)
+function getOrdinal(n) {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// Helper: Update race info display
+function updateRaceInfo(playerCount, raceDistance) {
+  const statPlayers = document.getElementById("stat-players");
+  const statMinPlayers = document.getElementById("stat-min-players");
+  const statFinish = document.getElementById("stat-finish");
+  const statStatus = document.getElementById("stat-status");
+  
+  if (statPlayers) statPlayers.textContent = playerCount || 0;
+  if (statMinPlayers) statMinPlayers.textContent = minPlayers;
+  if (statFinish) statFinish.textContent = (raceDistance || 1000) + "m";
+  if (statStatus) statStatus.textContent = "Waiting";
+  
+  // Update lobby status
+  if (lobbyStatus) {
+    if (playerCount >= minPlayers) {
+      lobbyStatus.textContent = "> Ready to race!";
+    } else {
+      lobbyStatus.textContent = `> Need ${minPlayers - playerCount} more player(s)`;
+    }
+  }
+}
+
+// Helper: Update player count
+function updatePlayerCount(count) {
+  const statPlayers = document.getElementById("stat-players");
+  if (statPlayers) statPlayers.textContent = count || 0;
+  
+  // Update lobby status
+  if (lobbyStatus) {
+    if (count >= minPlayers) {
+      lobbyStatus.textContent = "> Ready to race!";
+    } else {
+      lobbyStatus.textContent = `> Need ${minPlayers - count} more player(s)`;
+    }
+  }
 }

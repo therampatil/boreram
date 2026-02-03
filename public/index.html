@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Terminal</title>
+    <title>Neon Racer</title>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
@@ -49,7 +49,8 @@
           <span class="prompt">$</span> room: <span id="display-room"></span> |
           user: <span id="display-name"></span>
           <button id="share-btn" class="share-btn">[Share Link]</button>
-          <button id="restart-btn" class="restart-btn hidden">[Restart Game]</button>
+          <button id="start-race-btn" class="start-btn hidden">[Start Race]</button>
+          <button id="restart-btn" class="restart-btn hidden">[New Race]</button>
         </div>
         <div class="game-layout-container">
           <!-- Left Panel: Details -->
@@ -71,7 +72,13 @@
               </ul>
             </div>
             <div id="game-stats">
-              <p class="section-title">> stats:</p>
+              <p class="section-title">> race info:</p>
+              <div class="stat-row">
+                <span>status:</span> <span id="stat-status">Waiting</span>
+              </div>
+              <div class="stat-row">
+                <span>players:</span> <span id="stat-players">0</span>/<span id="stat-min-players">2</span>
+              </div>
               <div class="stat-row">
                 <span>speed:</span> <span id="stat-speed">0</span>
               </div>
@@ -79,8 +86,16 @@
                 <span>distance:</span> <span id="stat-distance">0m</span>
               </div>
               <div class="stat-row">
-                <span>players:</span> <span id="stat-players">1</span>
+                <span>finish:</span> <span id="stat-finish">1000m</span>
               </div>
+              <div class="stat-row">
+                <span>time:</span> <span id="stat-time">00:00</span>
+              </div>
+            </div>
+            <!-- Lobby waiting message -->
+            <div id="lobby-message" class="lobby-message">
+              <p>> Waiting for players...</p>
+              <p id="lobby-status">> Need more players to start</p>
             </div>
           </div>
           <!-- Right Panel: Game Canvas -->

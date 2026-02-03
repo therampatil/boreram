@@ -89,10 +89,20 @@ const Game = (function () {
   // Boost animation particles
   let boostParticles = [];
 
+  // Race state
+  let raceState = 'waiting'; // waiting, countdown, racing, finished
+  let raceDistance = 1000; // meters to finish
+  let countdownValue = 0;
+  let raceTime = 0;
+  let playerFinishedData = null;
+  let raceResults = null;
+  let myPosition = null;
+
   // Initialize the game
-  function init(canvasElement, socketInstance, id, color, spawnWorldY = 0) {
+  function init(canvasElement, socketInstance, id, color, spawnWorldY = 0, distance = 1000) {
     canvas = canvasElement;
     ctx = canvas.getContext("2d");
+    raceDistance = distance;
     socket = socketInstance;
     playerId = id;
 
@@ -133,20 +143,54 @@ const Game = (function () {
     player.x = canvas.width / 2 - player.width / 2;
     player.worldY = 0;
     player.distance = 0;
-    
+
     const initialCameraY =
       player.worldY - (canvas.height - player.height - PLAYER_SCREEN_Y_OFFSET);
     camera.y = initialCameraY;
     camera.targetY = initialCameraY;
-    
-    scrollSpeed = baseSpeed;
-    serverSpeed = baseSpeed;
+
+    scrollSpeed = 0;
+    serverSpeed = 0;
     isStunned = false;
     isBoosting = false;
     boostParticles = [];
     obstacles = [];
     
+    // Reset race state
+    raceState = 'waiting';
+    countdownValue = 0;
+    raceTime = 0;
+    playerFinishedData = null;
+    raceResults = null;
+    myPosition = null;
+
     console.log("Game reset");
+  }
+
+  // Called when countdown starts
+  function showCountdown(value) {
+    raceState = 'countdown';
+    countdownValue = value;
+  }
+
+  // Called when race starts
+  function startRacing(distance) {
+    raceState = 'racing';
+    raceDistance = distance || 1000;
+    countdownValue = 0;
+  }
+
+  // Called when a player finishes
+  function playerFinished(data) {
+    if (data.name === (otherPlayers[playerId]?.name || "You")) {
+      myPosition = data.position;
+    }
+  }
+
+  // Called when race ends
+  function showResults(results) {
+    raceState = 'finished';
+    raceResults = results;
   }
 
   function setupSocketListeners() {
@@ -162,9 +206,18 @@ const Game = (function () {
         road.targetWidth = data.roadWidth;
       }
 
-      // Update server-controlled speed
-      if (data.gameSpeed) {
-        serverSpeed = data.gameSpeed;
+      // Update server-controlled speed (0 when not racing)
+      serverSpeed = data.gameSpeed || 0;
+      
+      // Update race state from server
+      if (data.raceState) {
+        raceState = data.raceState;
+      }
+      if (data.raceDistance) {
+        raceDistance = data.raceDistance;
+      }
+      if (data.raceTime) {
+        raceTime = data.raceTime;
       }
     });
   }
@@ -261,9 +314,9 @@ const Game = (function () {
   function start() {
     if (gameRunning) return;
     gameRunning = true;
-    scrollSpeed = baseSpeed;
+    scrollSpeed = 0; // Don't move until race starts
     gameLoop();
-    console.log("Game started");
+    console.log("Game started (waiting for race)");
   }
 
   function stop() {
@@ -273,10 +326,13 @@ const Game = (function () {
   function update() {
     const now = Date.now();
 
+    // Only allow movement during racing state
+    const canMove = raceState === 'racing';
+
     // Check if stun has expired
     if (isStunned && now >= stunnedUntil) {
       isStunned = false;
-      scrollSpeed = serverSpeed; // Reset to server speed after stun
+      scrollSpeed = serverSpeed;
     }
 
     // Smoothly lerp road width towards target
@@ -289,16 +345,17 @@ const Game = (function () {
     }
 
     // Sync scroll speed with server (with slight local smoothing)
-    if (!isStunned) {
+    if (!isStunned && canMove) {
       scrollSpeed += (serverSpeed - scrollSpeed) * 0.1;
 
       // Apply boost if holding up arrow/W
-      isBoosting = keys.boost && !isStunned;
-      
+      isBoosting = keys.boost && !isStunned && canMove;
+
       // Generate boost particles when boosting
       if (isBoosting) {
         // Add new particles from the back of the car
-        const playerScreenY = canvas.height - player.height - PLAYER_SCREEN_Y_OFFSET;
+        const playerScreenY =
+          canvas.height - player.height - PLAYER_SCREEN_Y_OFFSET;
         for (let i = 0; i < 2; i++) {
           boostParticles.push({
             x: player.x + player.width / 2 + (Math.random() - 0.5) * 10,
@@ -307,14 +364,17 @@ const Game = (function () {
             vy: 3 + Math.random() * 3,
             life: 1.0,
             size: 3 + Math.random() * 4,
-            color: Math.random() > 0.5 ? '#ff6600' : '#ffaa00'
+            color: Math.random() > 0.5 ? "#ff6600" : "#ffaa00",
           });
         }
       }
+    } else if (!canMove) {
+      scrollSpeed = 0;
+      isBoosting = false;
     }
-    
+
     // Update boost particles
-    boostParticles = boostParticles.filter(p => {
+    boostParticles = boostParticles.filter((p) => {
       p.x += p.vx;
       p.y += p.vy;
       p.life -= 0.05;
@@ -327,8 +387,8 @@ const Game = (function () {
       ? scrollSpeed * BOOST_MULTIPLIER
       : scrollSpeed;
 
-    // Update world position - only if not stunned
-    if (!isStunned) {
+    // Update world position - only if not stunned AND racing
+    if (!isStunned && canMove) {
       // Move player forward in world Y (negative = moving up/forward)
       player.worldY -= effectiveSpeed * PIXELS_PER_METER;
 
@@ -380,6 +440,8 @@ const Game = (function () {
     const speedEl = document.getElementById("stat-speed");
     const distanceEl = document.getElementById("stat-distance");
     const playersEl = document.getElementById("stat-players");
+    const timeEl = document.getElementById("stat-time");
+    const statusEl = document.getElementById("stat-status");
 
     if (speedEl) {
       const displaySpeed = isBoosting
@@ -388,10 +450,23 @@ const Game = (function () {
       speedEl.textContent = displaySpeed.toFixed(1) + (isBoosting ? " 🚀" : "");
     }
     if (distanceEl) {
-      distanceEl.textContent = Math.floor(player.distance) + "m";
+      const remaining = Math.max(0, raceDistance - Math.floor(player.distance));
+      distanceEl.textContent = `${Math.floor(player.distance)}m / ${raceDistance}m`;
     }
     if (playersEl) {
       playersEl.textContent = Object.keys(otherPlayers).length;
+    }
+    if (timeEl && raceTime > 0) {
+      timeEl.textContent = formatRaceTime(raceTime);
+    }
+    if (statusEl) {
+      const states = {
+        'waiting': 'Waiting',
+        'countdown': 'Starting...',
+        'racing': 'Racing!',
+        'finished': 'Finished'
+      };
+      statusEl.textContent = states[raceState] || 'Waiting';
     }
   }
 
@@ -512,6 +587,12 @@ const Game = (function () {
     // Draw center lane markers with neon blue glow (world coordinates)
     drawNeonRoadLines(roadX);
 
+    // Draw start line
+    drawStartLine(roadX);
+
+    // Draw finish line
+    drawFinishLine(roadX);
+
     // Draw speed lines when going fast (>80% of max speed) or boosting
     const effectiveSpeed = isBoosting
       ? scrollSpeed * BOOST_MULTIPLIER
@@ -575,6 +656,175 @@ const Game = (function () {
 
     // Draw leaderboard
     drawLeaderboard();
+
+    // Draw race overlays (countdown, waiting, results)
+    drawRaceOverlay();
+  }
+
+  // Draw start line (at worldY = 0)
+  function drawStartLine(roadX) {
+    const startWorldY = 0;
+    if (!isOnScreen(startWorldY, 20)) return;
+
+    const screenY = toScreenY(startWorldY);
+
+    // Checkered pattern
+    ctx.save();
+    const squareSize = 10;
+    const numSquares = Math.ceil(road.width / squareSize);
+
+    for (let i = 0; i < numSquares; i++) {
+      for (let row = 0; row < 2; row++) {
+        const isWhite = (i + row) % 2 === 0;
+        ctx.fillStyle = isWhite ? "#ffffff" : "#000000";
+        ctx.fillRect(
+          roadX + i * squareSize,
+          screenY - squareSize + row * squareSize,
+          squareSize,
+          squareSize
+        );
+      }
+    }
+
+    // "START" text
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.fillStyle = "#00ff00";
+    ctx.textAlign = "center";
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = "#00ff00";
+    ctx.fillText("START", canvas.width / 2, screenY - 25);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // Draw finish line
+  function drawFinishLine(roadX) {
+    const finishWorldY = -raceDistance * PIXELS_PER_METER;
+    if (!isOnScreen(finishWorldY, 20)) return;
+
+    const screenY = toScreenY(finishWorldY);
+
+    // Checkered pattern
+    ctx.save();
+    const squareSize = 10;
+    const numSquares = Math.ceil(road.width / squareSize);
+
+    for (let i = 0; i < numSquares; i++) {
+      for (let row = 0; row < 2; row++) {
+        const isWhite = (i + row) % 2 === 0;
+        ctx.fillStyle = isWhite ? "#ffffff" : "#000000";
+        ctx.fillRect(
+          roadX + i * squareSize,
+          screenY - squareSize + row * squareSize,
+          squareSize,
+          squareSize
+        );
+      }
+    }
+
+    // "FINISH" text with glow
+    ctx.font = 'bold 20px "Courier New", monospace';
+    ctx.fillStyle = "#ffdd00";
+    ctx.textAlign = "center";
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = "#ffdd00";
+    ctx.fillText("🏁 FINISH 🏁", canvas.width / 2, screenY - 25);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // Draw race overlays (countdown, waiting screen, results)
+  function drawRaceOverlay() {
+    ctx.save();
+    ctx.textAlign = "center";
+
+    if (raceState === 'waiting') {
+      // Waiting for race to start
+      ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.fillRect(canvas.width / 2 - 150, canvas.height / 2 - 60, 300, 120);
+      
+      ctx.font = 'bold 24px "Courier New", monospace';
+      ctx.fillStyle = "#33ff33";
+      ctx.fillText("WAITING FOR PLAYERS", canvas.width / 2, canvas.height / 2 - 20);
+      
+      ctx.font = '14px "Courier New", monospace';
+      ctx.fillStyle = "#888888";
+      ctx.fillText("Host will start the race", canvas.width / 2, canvas.height / 2 + 20);
+    }
+    
+    if (raceState === 'countdown' && countdownValue >= 0) {
+      // Countdown overlay
+      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      ctx.font = 'bold 120px "Courier New", monospace';
+      ctx.shadowBlur = 30;
+      
+      if (countdownValue > 0) {
+        ctx.fillStyle = "#ffdd00";
+        ctx.shadowColor = "#ffdd00";
+        ctx.fillText(countdownValue.toString(), canvas.width / 2, canvas.height / 2 + 40);
+      } else {
+        ctx.fillStyle = "#00ff00";
+        ctx.shadowColor = "#00ff00";
+        ctx.fillText("GO!", canvas.width / 2, canvas.height / 2 + 40);
+      }
+      ctx.shadowBlur = 0;
+    }
+
+    if (raceState === 'finished' && raceResults) {
+      // Results overlay
+      ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+      ctx.fillRect(canvas.width / 2 - 180, 50, 360, 300);
+      
+      ctx.font = 'bold 28px "Courier New", monospace';
+      ctx.fillStyle = "#ffdd00";
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = "#ffdd00";
+      ctx.fillText("🏆 RACE COMPLETE 🏆", canvas.width / 2, 100);
+      ctx.shadowBlur = 0;
+      
+      ctx.font = '16px "Courier New", monospace';
+      raceResults.forEach((r, index) => {
+        const y = 140 + index * 30;
+        const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "  ";
+        const timeStr = formatRaceTime(r.time);
+        
+        ctx.fillStyle = r.name === (otherPlayers[playerId]?.name) ? "#33ff33" : "#ffffff";
+        ctx.fillText(`${medal} ${getOrdinal(r.position)} - ${r.name} (${timeStr})`, canvas.width / 2, y);
+      });
+      
+      ctx.font = '12px "Courier New", monospace';
+      ctx.fillStyle = "#888888";
+      ctx.fillText("Host can start a new race", canvas.width / 2, 320);
+    }
+
+    // Show position when player finishes
+    if (myPosition && raceState === 'racing') {
+      ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.fillRect(canvas.width / 2 - 100, 60, 200, 50);
+      
+      ctx.font = 'bold 20px "Courier New", monospace';
+      ctx.fillStyle = "#33ff33";
+      ctx.fillText(`You finished ${getOrdinal(myPosition)}!`, canvas.width / 2, 95);
+    }
+
+    ctx.restore();
+  }
+
+  // Helper functions for race overlay
+  function formatRaceTime(ms) {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    const millis = Math.floor((ms % 1000) / 10);
+    return `${minutes}:${seconds.toString().padStart(2, '0')}.${millis.toString().padStart(2, '0')}`;
+  }
+
+  function getOrdinal(n) {
+    const s = ["th", "st", "nd", "rd"];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
   }
 
   // Draw the road background with seamless scrolling using modulus
@@ -853,7 +1103,16 @@ const Game = (function () {
   }
 
   // Draw a detailed sports car
-  function drawCar(x, y, width, height, color, name, stunned = false, boosting = false) {
+  function drawCar(
+    x,
+    y,
+    width,
+    height,
+    color,
+    name,
+    stunned = false,
+    boosting = false,
+  ) {
     const w = width;
     const h = height;
 
@@ -976,7 +1235,7 @@ const Game = (function () {
     if (boosting) {
       const flameTime = Date.now() / 50;
       const flameHeight = 8 + Math.sin(flameTime) * 4;
-      
+
       // Left exhaust flame
       ctx.fillStyle = "#ff6600";
       ctx.beginPath();
@@ -985,7 +1244,7 @@ const Game = (function () {
       ctx.lineTo(x + 11, y + h);
       ctx.closePath();
       ctx.fill();
-      
+
       // Right exhaust flame
       ctx.beginPath();
       ctx.moveTo(x + w - 8, y + h);
@@ -993,7 +1252,7 @@ const Game = (function () {
       ctx.lineTo(x + w - 11, y + h);
       ctx.closePath();
       ctx.fill();
-      
+
       // Inner flame (brighter)
       ctx.fillStyle = "#ffaa00";
       const innerHeight = flameHeight * 0.6;
@@ -1003,7 +1262,7 @@ const Game = (function () {
       ctx.lineTo(x + 10, y + h);
       ctx.closePath();
       ctx.fill();
-      
+
       ctx.beginPath();
       ctx.moveTo(x + w - 8, y + h);
       ctx.lineTo(x + w - 6, y + h + innerHeight);
@@ -1075,6 +1334,10 @@ const Game = (function () {
     start,
     stop,
     reset,
+    showCountdown,
+    startRacing,
+    playerFinished,
+    showResults,
     isRunning: () => gameRunning,
   };
 })();

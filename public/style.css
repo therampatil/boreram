@@ -87,6 +87,39 @@ body {
   color: #0a0a0a;
 }
 
+.start-btn {
+  background-color: transparent;
+  border: 1px solid #33ff33;
+  color: #33ff33;
+  padding: 4px 10px;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  animation: pulse 1.5s infinite;
+}
+
+.start-btn:hover {
+  background-color: #33ff33;
+  color: #0a0a0a;
+}
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 5px #33ff33; }
+  50% { box-shadow: 0 0 15px #33ff33; }
+}
+
+.lobby-message {
+  margin-top: 15px;
+  padding: 10px;
+  border: 1px dashed #444;
+  color: #888;
+}
+
+.lobby-message.hidden {
+  display: none;
+}
+
 .input-group {
   margin-bottom: 15px;
 }
